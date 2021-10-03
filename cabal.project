@@ -1,0 +1,6 @@
+packages: .
+
+source-repository-package
+  type: git
+  location: https://github.com/liftM/twitter-conduit.git
+  tag: b417fae943de9575a6ce6b9f43b8c6491cdafcb9

@@ -1,0 +1,4 @@
+cradle:
+  cabal:
+    - path: "cmd/tweetogram/Main.hs"
+      component: "tweetogram:exe:tweetogram"
