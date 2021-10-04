@@ -22,7 +22,8 @@ cabal run tweetogram -- download \
   --twitter-username YOUR_USERNAME \
   --data-dir /tmp/tweetogram
 
-# Render your rankings.
+
+# Once your liked tweets are downloaded, you can render your rankings.
 cabal run tweetogram -- query --data-dir /tmp/tweetogram
 ```
 
