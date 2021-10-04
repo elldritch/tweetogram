@@ -46,7 +46,7 @@ import Options.Applicative (
  )
 import Relude
 import System.FilePath ((</>))
-import Text.Layout.Table (rowG, tableString, unicodeS)
+import Text.Layout.Table (rowG, tableString, titlesH, unicodeS)
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
@@ -247,7 +247,12 @@ query QueryOptions{..} = do
 
   render :: Result -> IO ()
   render Result{..} =
-    putStrLn $ tableString [def, def] unicodeS def $ fmap rowG renderedLikes
+    putStrLn $
+      tableString
+        (fmap (const def) headers)
+        unicodeS
+        (titlesH headers)
+        $ fmap rowG rows
    where
     orderedLikes :: [(LikedUser, Set TweetID)]
     orderedLikes =
@@ -271,7 +276,15 @@ query QueryOptions{..} = do
       filterTopN :: [(LikedUser, Set TweetID)] -> [(LikedUser, Set TweetID)]
       filterTopN = maybe id take topN
 
-    renderedLikes :: [[String]]
-    renderedLikes = fmap f filteredLikes
+    headers :: [String]
+    headers = ["Rank", "Liked tweets", "Username"]
+
+    rows :: [[String]]
+    rows = f <$> zip [0 ..] filteredLikes
      where
-      f (LikedUser{screenName}, likes) = [show (Set.size likes), toString screenName]
+      f :: (Integer, (LikedUser, Set TweetID)) -> [String]
+      f (i, (LikedUser{screenName}, likes)) =
+        [ show (i + 1)
+        , show (Set.size likes)
+        , toString screenName
+        ]
