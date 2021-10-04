@@ -34,10 +34,12 @@ import Options.Applicative (
   auto,
   command,
   execParser,
+  help,
   helper,
   hsubparser,
   info,
   long,
+  metavar,
   option,
   progDesc,
   strOption,
@@ -93,12 +95,12 @@ data DownloadOptions = DownloadOptions
 downloadOptionsP :: Parser DownloadOptions
 downloadOptionsP =
   DownloadOptions
-    <$> strOption (long "twitter-consumer-api-key")
-    <*> strOption (long "twitter-consumer-api-key-secret")
-    <*> strOption (long "twitter-access-token")
-    <*> strOption (long "twitter-access-token-secret")
-    <*> strOption (long "twitter-username")
-    <*> strOption (long "data-dir")
+    <$> strOption (long "twitter-consumer-api-key" <> help "Your \"Consumer Key: API Key\" from the Twitter Developer Portal")
+    <*> strOption (long "twitter-consumer-api-key-secret" <> help "Your \"Consumer Key: API Key Secret\" from the Twitter Developer Portal")
+    <*> strOption (long "twitter-access-token" <> help "Your \"Authentication Tokens: Access Token\" from the Twitter Developer Portal")
+    <*> strOption (long "twitter-access-token-secret" <> help "Your \"Authentication Tokens: Access Token Secret\" from the Twitter Developer Portal")
+    <*> strOption (long "twitter-username" <> help "Username of the account to download liked tweets from")
+    <*> strOption (long "data-dir" <> help "Filepath to a directory to save downloaded tweets")
 
 data QueryOptions = QueryOptions
   { dataDir :: FilePath
@@ -109,9 +111,9 @@ data QueryOptions = QueryOptions
 queryOptionsP :: Parser QueryOptions
 queryOptionsP =
   QueryOptions
-    <$> strOption (long "data-dir")
-    <*> optional (option auto (long "top"))
-    <*> optional (option auto (long "min-likes"))
+    <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
+    <*> optional (option auto (long "top" <> help "Only show top N most liked accounts" <> metavar "N"))
+    <*> optional (option auto (long "min-likes" <> help "Only show accounts with at least N likes" <> metavar "N"))
 
 argsP :: ParserInfo Options
 argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your liked tweets")
