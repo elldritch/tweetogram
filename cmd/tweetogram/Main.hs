@@ -1,23 +1,21 @@
 module Main (main) where
 
-import Conduit (
+import Conduit (PrimMonad, foldlC, mapMC)
+import Control.Exception (throwIO, try)
+import Control.Lens.Setter ((?~))
+import Data.Aeson (eitherDecodeStrict', encode)
+import Data.Conduit (
   ConduitT,
-  PrimMonad,
-  concatMapCE,
-  runConduit,
   runConduitRes,
-  runResourceT,
-  tryC,
   (.|),
  )
-import Control.Lens.Setter ((?~))
-import Data.Aeson (encode)
 import Data.Conduit.Combinators (
+  concatMapE,
   conduitVector,
   mapAccumWhileM,
   sinkFileCautious,
-  sinkNull,
   sourceFile,
+  splitOnUnboundedE,
  )
 import Data.Conduit.Throttle (
   Conf,
@@ -26,6 +24,9 @@ import Data.Conduit.Throttle (
   setMaxThroughput,
   throttleProducer,
  )
+import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
+import Data.Text qualified as T
 import Data.Vector (Vector)
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Options.Applicative (
@@ -59,7 +60,7 @@ import Web.Twitter.Conduit (
   twitterOAuth,
  )
 import Web.Twitter.Conduit.Parameters (TweetMode (..))
-import Web.Twitter.Types (Status (..))
+import Web.Twitter.Types (Status (..), User (..))
 
 newtype Options = Options
   { subcommand :: Subcommand
@@ -128,12 +129,13 @@ download options@DownloadOptions{..} = do
 
   putStrLn "Downloading liked tweets. This may take a few minutes due to Twitter's API rate limits."
 
-  result :: Either SomeException () <-
-    runConduitRes $
-      throttleProducer throttleConf (getLikes twInfo connMgr twitterUsername)
-        .| concatMapCE ((<> "\n") . toStrict . encode)
-        .| void showProgress
-        .| tryC (sinkFileCautious (dataDir </> "likes.ndjson"))
+  result <-
+    try $
+      runConduitRes $
+        throttleProducer throttleConf (getLikes twInfo connMgr twitterUsername)
+          .| concatMapE ((<> "\n") . toStrict . encode)
+          .| void showProgress
+          .| sinkFileCautious (dataDir </> "likes.ndjson")
 
   case result of
     Left err -> case fromException err of
@@ -173,9 +175,86 @@ download options@DownloadOptions{..} = do
     putStrLn $ "Downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total)."
     pure (Right (i + 1, x))
 
+newtype ParseException = ParseException
+  { errorMessage :: String
+  }
+  deriving (Show)
+
+instance Exception ParseException where
+  displayException (ParseException msg) = "could not parse Tweetogram data directory: " <> msg
+
+type UserID = Integer
+
+type TweetID = Integer
+
+data Result = Result
+  { users :: Map UserID LikedUser
+  , groupedLikes :: Map UserID (Set TweetID)
+  }
+  deriving (Show)
+
+data LikedUser = LikedUser
+  { userID :: Integer
+  , screenName :: Text
+  , name :: Text
+  }
+  deriving (Show)
+
 query :: QueryOptions -> IO ()
 query QueryOptions{..} = do
-  runResourceT $
-    runConduit $
-      sourceFile (dataDir </> "likes.ndjson")
-        .| sinkNull
+  result <-
+    try $
+      runConduitRes $
+        sourceFile (dataDir </> "likes.ndjson")
+          .| splitOnUnboundedE (== (toEnum $ ord '\n'))
+          .| decodeLikes
+          .| groupLikesByAuthor
+
+  case result of
+    Left err -> case fromException err of
+      Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
+        putStrLn $ "Could not load liked tweets from " <> show filename <> ": " <> description
+      Just _ -> putStrLn $ "Unexpected error: " <> displayException err
+      Nothing -> putStrLn $ "Unexpected error: " <> displayException err
+    Right r -> render r
+ where
+  decodeLikes :: (MonadIO m) => ConduitT ByteString Status m ()
+  decodeLikes = mapMC $ \line -> do
+    case eitherDecodeStrict' line of
+      Left err -> liftIO $ throwIO $ ParseException err
+      Right status -> pure status
+
+  groupLikesByAuthor :: (Monad m) => ConduitT Status o m Result
+  groupLikesByAuthor = foldlC f zero
+   where
+    zero = Result{users = Map.empty, groupedLikes = Map.empty}
+
+    f :: Result -> Status -> Result
+    f Result{..} Status{statusId, statusUser = User{userId, userName, userScreenName}} =
+      Result
+        { users = Map.insert userId (LikedUser{userID = userId, screenName = userScreenName, name = userName}) users
+        , groupedLikes = Map.insertWith Set.union userId (Set.singleton statusId) groupedLikes
+        }
+
+  render :: Result -> IO ()
+  render Result{..} = case renderedLikes of
+    Left err -> putStrLn err
+    Right output -> putTextLn $ T.intercalate "\n" output
+   where
+    orderedLikes :: [(UserID, Set TweetID)]
+    orderedLikes = sortOn (Down . Set.size . snd) $ Map.toList groupedLikes
+
+    renderedLikes :: Either String [Text]
+    renderedLikes = mapM renderLike orderedLikes
+
+    renderLike :: (UserID, Set TweetID) -> Either String Text
+    renderLike (userID, likedTweets) = case renderUser userID of
+      Left s -> Left s
+      Right t -> Right $ show (Set.size likedTweets) <> " - " <> t
+
+    renderUser :: UserID -> Either String Text
+    renderUser userID = case lookedUpUser of
+      Just LikedUser{screenName} -> Right screenName
+      Nothing -> Left $ "Impossible: inconsistent Tweetogram data: unknown user ID: " <> show userID
+     where
+      lookedUpUser = Map.lookup userID users
