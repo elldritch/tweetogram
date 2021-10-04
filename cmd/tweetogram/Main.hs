@@ -103,13 +103,15 @@ downloadOptionsP =
     <*> strOption (long "twitter-username" <> help "Username of the account to download liked tweets from")
     <*> strOption (long "data-dir" <> help "Filepath to a directory to save downloaded tweets")
 
+-- TODO:
+-- - Sort on different columns
+-- - Filter on different columns
+
 data QueryOptions = QueryOptions
   { dataDir :: FilePath
   , topN :: Maybe Int
   , minLikes :: Maybe Int
   }
-
--- TODO: filter-followed bool, filter-nsfw bool
 
 queryOptionsP :: Parser QueryOptions
 queryOptionsP =
@@ -201,23 +203,16 @@ type TweetID = Integer
 
 data Result = Result
   { users :: Map UserID LikedUser
+  , tweets :: Map TweetID LikedTweet
   , groupedLikes :: Map UserID (Set TweetID)
   }
   deriving (Show)
 
--- Note: even though the official Twitter clients will display some accounts as
--- "containing potentially sensitive content", this doesn't seem to be an actual
--- field available on the API for users. Only individual _tweets_ have a
--- "potentially sensitive" field.
+-- TODO: Is being followed by target user?
 --
--- I'm not totally sure how the client decides to display this warning. My guess
--- is that it takes a threshold percentage of potentially sensitive tweets,
--- since it appears that some accounts that have sensitive tweets still don't
--- show the warning.
---
--- See also:
--- - v1 API user object model: https://developer.twitter.com/en/docs/twitter-api/v1/data-dictionary/object-model/user
--- - v2 API user object model: https://developer.twitter.com/en/docs/twitter-api/data-dictionary/object-model/user
+-- NB: I can't use the "following" field for this, since that tells me whether
+-- the _API user_ is following the author. Instead, I need to query
+-- `GET friends/ids` and cross-reference against the author's user ID.
 
 data LikedUser = LikedUser
   { userID :: Integer
@@ -232,7 +227,24 @@ data LikedUser = LikedUser
   }
   deriving (Show)
 
--- TODO: is being followed by target user (note: NOT by API user)
+data LikedTweet = LikedTweet
+  { tweetID :: Integer
+  , -- Note: even though the official Twitter clients will display some accounts
+    -- as "containing potentially sensitive content", this doesn't seem to be an
+    -- actual field available on the API for users. Only individual _tweets_
+    -- have a "potentially sensitive" field.
+    --
+    -- I'm not totally sure how the client decides to display this warning. My
+    -- guess is that it takes a threshold percentage of potentially sensitive
+    -- tweets, since it appears that some accounts that have sensitive tweets
+    -- still don't show the warning.
+    --
+    -- See also:
+    -- - v1 API user object model: https://developer.twitter.com/en/docs/twitter-api/v1/data-dictionary/object-model/user
+    -- - v2 API user object model: https://developer.twitter.com/en/docs/twitter-api/data-dictionary/object-model/user
+    possiblySensitive :: Bool
+  }
+  deriving (Show)
 
 query :: QueryOptions -> IO ()
 query QueryOptions{..} = do
@@ -261,12 +273,18 @@ query QueryOptions{..} = do
   groupLikesByAuthor :: (Monad m) => ConduitT Status o m Result
   groupLikesByAuthor = foldlC f zero
    where
-    zero = Result{users = Map.empty, groupedLikes = Map.empty}
+    zero =
+      Result
+        { users = Map.empty
+        , tweets = Map.empty
+        , groupedLikes = Map.empty
+        }
 
     f :: Result -> Status -> Result
-    f Result{..} Status{statusId, statusUser = User{..}} =
+    f Result{..} Status{statusUser = User{..}, ..} =
       Result
         { users = Map.insert userId likedUser users
+        , tweets = Map.insert statusId likedTweet tweets
         , groupedLikes = Map.insertWith Set.union userId (Set.singleton statusId) groupedLikes
         }
      where
@@ -283,6 +301,12 @@ query QueryOptions{..} = do
           , likesCount = userFavoritesCount
           }
 
+      likedTweet =
+        LikedTweet
+          { tweetID = statusId
+          , possiblySensitive = fromMaybe False statusPossiblySensitive
+          }
+
   render :: Result -> IO ()
   render Result{..} =
     putStrLn $
@@ -292,8 +316,8 @@ query QueryOptions{..} = do
         (titlesH headers)
         $ fmap rowG rows
    where
-    orderedLikes :: [(LikedUser, Set TweetID)]
-    orderedLikes =
+    ordered :: [(LikedUser, Set TweetID)]
+    ordered =
       sortOn (Down . Set.size . snd) $
         sortOn (screenName . fst) $
           first getUser <$> Map.toList groupedLikes
@@ -303,8 +327,8 @@ query QueryOptions{..} = do
       Just lu -> lu
       Nothing -> error $ "impossible: inconsistent Tweetogram data: unknown user ID: " <> show userID
 
-    filteredLikes :: [(LikedUser, Set TweetID)]
-    filteredLikes = filterTopN $ filterMinLikes orderedLikes
+    filtered :: [(LikedUser, Set TweetID)]
+    filtered = filterTopN $ filterMinLikes ordered
      where
       filterMinLikes :: [(LikedUser, Set TweetID)] -> [(LikedUser, Set TweetID)]
       filterMinLikes = case minLikes of
@@ -314,33 +338,43 @@ query QueryOptions{..} = do
       filterTopN :: [(LikedUser, Set TweetID)] -> [(LikedUser, Set TweetID)]
       filterTopN = maybe id take topN
 
+    hydrated :: [(LikedUser, [LikedTweet])]
+    hydrated = second (fmap getTweet . toList) <$> filtered
+
+    getTweet :: TweetID -> LikedTweet
+    getTweet tweetID = case Map.lookup tweetID tweets of
+      Just lt -> lt
+      Nothing -> error $ "impossible: inconsistent Tweetogram data: unknown tweet ID: " <> show tweetID
+
     headers :: [String]
     headers =
       [ "Rank"
       , "Liked tweets"
       , "Handle"
       , "Name"
-      , "Created"
       , "Verified?"
+      , "NSFW*?"
       , "Followers"
       , "Following"
       , "Tweets"
       , "Likes"
+      , "Created"
       ]
 
     rows :: [[String]]
-    rows = f <$> zip [0 ..] filteredLikes
+    rows = f <$> zip [0 ..] hydrated
      where
-      f :: (Integer, (LikedUser, Set TweetID)) -> [String]
+      f :: (Integer, (LikedUser, [LikedTweet])) -> [String]
       f (i, (LikedUser{..}, likes)) =
         [ show (i + 1)
-        , show (Set.size likes)
+        , show (length likes)
         , toString screenName
         , toString displayName
-        , show createdAt
         , show isVerified
+        , show (any possiblySensitive likes)
         , show followerCount
         , show followingCount
         , show tweetCount
         , show likesCount
+        , show createdAt
         ]
