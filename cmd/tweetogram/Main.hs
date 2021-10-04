@@ -31,12 +31,14 @@ import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Options.Applicative (
   Parser,
   ParserInfo,
+  auto,
   command,
   execParser,
   helper,
   hsubparser,
   info,
   long,
+  option,
   progDesc,
   strOption,
  )
@@ -98,22 +100,21 @@ downloadOptionsP =
     <*> strOption (long "twitter-username")
     <*> strOption (long "data-dir")
 
-newtype QueryOptions = QueryOptions
+data QueryOptions = QueryOptions
   { dataDir :: FilePath
+  , topN :: Maybe Int
+  , minLikes :: Maybe Int
   }
 
 queryOptionsP :: Parser QueryOptions
-queryOptionsP = QueryOptions <$> strOption (long "data-dir")
+queryOptionsP =
+  QueryOptions
+    <$> strOption (long "data-dir")
+    <*> optional (option auto (long "top"))
+    <*> optional (option auto (long "min-likes"))
 
 argsP :: ParserInfo Options
 argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your liked tweets")
-
-newTWInfo :: DownloadOptions -> TWInfo
-newTWInfo DownloadOptions{..} =
-  setCredential
-    (twitterOAuth{oauthConsumerKey = twitterConsumerKey, oauthConsumerSecret = twitterConsumerSecret})
-    (Credential [("oauth_token", twitterAccessToken), ("oauth_token_secret", twitterAccessTokenSecret)])
-    def
 
 main :: IO ()
 main = do
@@ -123,8 +124,7 @@ main = do
     Query queryOptions -> query queryOptions
 
 download :: DownloadOptions -> IO ()
-download options@DownloadOptions{..} = do
-  let twInfo = newTWInfo options
+download DownloadOptions{..} = do
   connMgr <- newManager tlsManagerSettings
 
   putStrLn "Downloading liked tweets. This may take a few minutes due to Twitter's API rate limits."
@@ -132,7 +132,7 @@ download options@DownloadOptions{..} = do
   result <-
     try $
       runConduitRes $
-        throttleProducer throttleConf (getLikes twInfo connMgr twitterUsername)
+        throttleProducer throttleConf (getLikes connMgr twitterUsername)
           .| concatMapE ((<> "\n") . toStrict . encode)
           .| void showProgress
           .| sinkFileCautious (dataDir </> "likes.ndjson")
@@ -158,8 +158,15 @@ download options@DownloadOptions{..} = do
       & setMaxThroughput 75
       & setInterval (1000 * 60 * 15)
 
-  getLikes :: (MonadIO m, PrimMonad m) => TWInfo -> Manager -> Text -> ConduitT () (Vector Status) m ()
-  getLikes twInfo connMgr username =
+  twInfo :: TWInfo
+  twInfo =
+    setCredential
+      (twitterOAuth{oauthConsumerKey = twitterConsumerKey, oauthConsumerSecret = twitterConsumerSecret})
+      (Credential [("oauth_token", twitterAccessToken), ("oauth_token_secret", twitterAccessTokenSecret)])
+      def
+
+  getLikes :: (MonadIO m, PrimMonad m) => Manager -> Text -> ConduitT () (Vector Status) m ()
+  getLikes connMgr username =
     sourceWithMaxId twInfo connMgr (getLikesReq username)
       .| conduitVector pageSize
 
@@ -251,7 +258,18 @@ query QueryOptions{..} = do
       Just lu -> lu
       Nothing -> error $ "impossible: inconsistent Tweetogram data: unknown user ID: " <> show userID
 
+    filteredLikes :: [(LikedUser, Set TweetID)]
+    filteredLikes = filterTopN $ filterMinLikes orderedLikes
+     where
+      filterMinLikes :: [(LikedUser, Set TweetID)] -> [(LikedUser, Set TweetID)]
+      filterMinLikes = case minLikes of
+        Just n -> filter ((>= n) . Set.size . snd)
+        Nothing -> id
+
+      filterTopN :: [(LikedUser, Set TweetID)] -> [(LikedUser, Set TweetID)]
+      filterTopN = maybe id take topN
+
     renderedLikes :: [[String]]
-    renderedLikes = fmap f orderedLikes
+    renderedLikes = fmap f filteredLikes
      where
       f (LikedUser{screenName}, likes) = [show (Set.size likes), toString screenName]
