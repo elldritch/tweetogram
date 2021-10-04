@@ -26,7 +26,6 @@ import Data.Conduit.Throttle (
  )
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
-import Data.Text qualified as T
 import Data.Vector (Vector)
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Options.Applicative (
@@ -43,6 +42,7 @@ import Options.Applicative (
  )
 import Relude
 import System.FilePath ((</>))
+import Text.Layout.Table (rowG, tableString, unicodeS)
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
@@ -237,24 +237,18 @@ query QueryOptions{..} = do
         }
 
   render :: Result -> IO ()
-  render Result{..} = case renderedLikes of
-    Left err -> putStrLn err
-    Right output -> putTextLn $ T.intercalate "\n" output
+  render Result{..} =
+    putStrLn $ tableString [def, def] unicodeS def $ fmap rowG renderedLikes
    where
-    orderedLikes :: [(UserID, Set TweetID)]
-    orderedLikes = sortOn (Down . Set.size . snd) $ Map.toList groupedLikes
+    orderedLikes :: [(LikedUser, Set TweetID)]
+    orderedLikes = fmap (first getUser) $ sortOn (Down . Set.size . snd) $ Map.toList groupedLikes
 
-    renderedLikes :: Either String [Text]
-    renderedLikes = mapM renderLike orderedLikes
+    getUser :: UserID -> LikedUser
+    getUser userID = case Map.lookup userID users of
+      Just lu -> lu
+      Nothing -> error $ "impossible: inconsistent Tweetogram data: unknown user ID: " <> show userID
 
-    renderLike :: (UserID, Set TweetID) -> Either String Text
-    renderLike (userID, likedTweets) = case renderUser userID of
-      Left s -> Left s
-      Right t -> Right $ show (Set.size likedTweets) <> " - " <> t
-
-    renderUser :: UserID -> Either String Text
-    renderUser userID = case lookedUpUser of
-      Just LikedUser{screenName} -> Right screenName
-      Nothing -> Left $ "Impossible: inconsistent Tweetogram data: unknown user ID: " <> show userID
+    renderedLikes :: [[String]]
+    renderedLikes = fmap f orderedLikes
      where
-      lookedUpUser = Map.lookup userID users
+      f (LikedUser{screenName}, likes) = [show (Set.size likes), toString screenName]
