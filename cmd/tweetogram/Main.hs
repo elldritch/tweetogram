@@ -241,7 +241,10 @@ query QueryOptions{..} = do
     putStrLn $ tableString [def, def] unicodeS def $ fmap rowG renderedLikes
    where
     orderedLikes :: [(LikedUser, Set TweetID)]
-    orderedLikes = fmap (first getUser) $ sortOn (Down . Set.size . snd) $ Map.toList groupedLikes
+    orderedLikes =
+      sortOn (Down . Set.size . snd) $
+        sortOn (screenName . fst) $
+          first getUser <$> Map.toList groupedLikes
 
     getUser :: UserID -> LikedUser
     getUser userID = case Map.lookup userID users of
