@@ -23,9 +23,11 @@ import Data.Vector (Vector)
 import Options.Applicative (
   Parser,
   ParserInfo,
+  command,
   execParser,
   fullDesc,
   helper,
+  hsubparser,
   info,
   long,
   progDesc,
@@ -51,7 +53,24 @@ import Web.Twitter.Conduit (
 import Web.Twitter.Conduit.Parameters (TweetMode (..))
 import Web.Twitter.Types (Status (..))
 
-data Options = Options
+newtype Options = Options
+  { subcommand :: Subcommand
+  }
+
+data Subcommand
+  = Download DownloadOptions
+  | Query QueryOptions
+
+subcommandP :: Parser Subcommand
+subcommandP = hsubparser (downloadC <> queryC)
+ where
+  downloadC = command "download" (info (Download <$> downloadOptionsP) $ progDesc "Download your liked tweets")
+  queryC = command "query" (info (Query <$> queryOptionsP) $ progDesc "Query statistics about liked tweets")
+
+optionsP :: Parser Options
+optionsP = Options <$> subcommandP
+
+data DownloadOptions = DownloadOptions
   { twitterConsumerKey :: ByteString
   , twitterConsumerSecret :: ByteString
   , twitterAccessToken :: ByteString
@@ -59,11 +78,10 @@ data Options = Options
   , twitterUsername :: Text
   , dataDir :: FilePath
   }
-  deriving (Show)
 
-optionsP :: Parser Options
-optionsP =
-  Options
+downloadOptionsP :: Parser DownloadOptions
+downloadOptionsP =
+  DownloadOptions
     <$> strOption (long "twitter-consumer-api-key")
     <*> strOption (long "twitter-consumer-api-key-secret")
     <*> strOption (long "twitter-access-token")
@@ -71,11 +89,18 @@ optionsP =
     <*> strOption (long "twitter-username")
     <*> strOption (long "data-dir")
 
+newtype QueryOptions = QueryOptions
+  { dataDir :: FilePath
+  }
+
+queryOptionsP :: Parser QueryOptions
+queryOptionsP = QueryOptions <$> strOption (long "data-dir")
+
 argsP :: ParserInfo Options
 argsP = info (optionsP <**> helper) (fullDesc <> progDesc "Computes which accounts you like the most tweets from")
 
-newTWInfo :: Options -> TWInfo
-newTWInfo Options{..} =
+newTWInfo :: DownloadOptions -> TWInfo
+newTWInfo DownloadOptions{..} =
   setCredential
     (twitterOAuth{oauthConsumerKey = twitterConsumerKey, oauthConsumerSecret = twitterConsumerSecret})
     (Credential [("oauth_token", twitterAccessToken), ("oauth_token_secret", twitterAccessTokenSecret)])
@@ -83,8 +108,13 @@ newTWInfo Options{..} =
 
 main :: IO ()
 main = do
-  options@Options{..} <- execParser argsP
+  Options{subcommand} <- execParser argsP
+  case subcommand of
+    Download downloadOptions -> download downloadOptions
+    Query queryOptions -> error "not implemented"
 
+download :: DownloadOptions -> IO ()
+download options@DownloadOptions{..} = do
   let twInfo = newTWInfo options
   connMgr <- newManager tlsManagerSettings
 
