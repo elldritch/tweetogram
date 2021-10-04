@@ -1,7 +1,25 @@
 module Main (main) where
 
-import Conduit (mapM_C, runConduit, takeC, (.|))
+import Conduit (
+  ConduitT,
+  PrimMonad,
+  concatMapCE,
+  conduitVector,
+  runConduit,
+  runResourceT,
+  sinkFileCautious,
+  (.|),
+ )
 import Control.Lens.Setter ((?~))
+import Data.Aeson (encode)
+import Data.Conduit.Throttle (
+  Conf,
+  newConf,
+  setInterval,
+  setMaxThroughput,
+  throttleProducer,
+ )
+import Data.Vector (Vector)
 import Options.Applicative (
   Parser,
   ParserInfo,
@@ -14,11 +32,11 @@ import Options.Applicative (
   strOption,
  )
 import Relude
-import Text.Pretty.Simple (pPrint)
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
   FavoritesList,
+  Manager,
   OAuth (..),
   TWInfo (..),
   UserParam (..),
@@ -39,6 +57,7 @@ data Options = Options
   , twitterAccessToken :: ByteString
   , twitterAccessTokenSecret :: ByteString
   , twitterUsername :: Text
+  , dataDir :: FilePath
   }
   deriving (Show)
 
@@ -50,6 +69,7 @@ optionsP =
     <*> strOption (long "twitter-access-token")
     <*> strOption (long "twitter-access-token-secret")
     <*> strOption (long "twitter-username")
+    <*> strOption (long "data-dir")
 
 argsP :: ParserInfo Options
 argsP = info (optionsP <**> helper) (fullDesc <> progDesc "Computes which accounts you like the most tweets from")
@@ -63,27 +83,38 @@ newTWInfo Options{..} =
 
 main :: IO ()
 main = do
-  options@Options{twitterUsername} <- execParser argsP
+  options@Options{..} <- execParser argsP
 
   let twInfo = newTWInfo options
   connMgr <- newManager tlsManagerSettings
 
-  -- TODO: Next, dump these to disk so I won't lose them, then group them and
-  -- render.
-  runConduit $
-    sourceWithMaxId twInfo connMgr (getLikes twitterUsername)
-      .| takeC maxPageSize
-      .| mapM_C mapMLike
+  runResourceT $
+    runConduit $
+      throttleProducer throttleConf (getLikes twInfo connMgr twitterUsername)
+        .| concatMapCE ((<> "\n") . toStrict . encode)
+        .| sinkFileCautious dataDir
  where
   maxPageSize :: (Num a) => a
   maxPageSize = 200
 
-  getLikes :: Text -> APIRequest FavoritesList [Status]
-  getLikes user =
+  -- We throttle on a per-page basis instead of a per-status basis because
+  -- otherwise the throttle "smears" the 75*200 statuses I can request across
+  -- the 15 minutes. This is slower overall than just throttling by page because
+  -- statuses that have already been loaded still get throttled.
+  throttleConf :: Conf a
+  throttleConf =
+    newConf
+      & setMaxThroughput 75
+      & setInterval (1000 * 60 * 15)
+
+  getLikes :: (MonadIO m, PrimMonad m) => TWInfo -> Manager -> Text -> ConduitT () (Vector Status) m ()
+  getLikes twInfo connMgr username =
+    sourceWithMaxId twInfo connMgr (getLikesReq username)
+      .| conduitVector maxPageSize
+
+  getLikesReq :: Text -> APIRequest FavoritesList [Status]
+  getLikesReq user =
     favoritesList
       (Just (ScreenNameParam $ toString user))
       & #count ?~ maxPageSize
       & #tweet_mode ?~ Extended
-
-  mapMLike :: Status -> IO ()
-  mapMLike = pPrint
