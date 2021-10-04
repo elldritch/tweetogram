@@ -78,6 +78,7 @@ executable tweetogram
     , optparse-applicative  ^>=0.16.1.0
     , table-layout          ^>=0.9.1.0
     , text                  ^>=1.2.5.0
+    , time                  ^>=1.11
     , twitter-conduit       ^>=0.5.1
     , twitter-types         ^>=0.10.1
     , vector                ^>=0.12.3.1

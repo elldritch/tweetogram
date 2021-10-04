@@ -26,6 +26,7 @@ import Data.Conduit.Throttle (
  )
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
+import Data.Time (UTCTime)
 import Data.Vector (Vector)
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Options.Applicative (
@@ -46,7 +47,7 @@ import Options.Applicative (
  )
 import Relude
 import System.FilePath ((</>))
-import Text.Layout.Table (rowG, tableString, titlesH, unicodeS)
+import Text.Layout.Table (asciiS, rowG, tableString, titlesH)
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
@@ -107,6 +108,8 @@ data QueryOptions = QueryOptions
   , topN :: Maybe Int
   , minLikes :: Maybe Int
   }
+
+-- TODO: filter-followed bool, filter-nsfw bool
 
 queryOptionsP :: Parser QueryOptions
 queryOptionsP =
@@ -202,12 +205,34 @@ data Result = Result
   }
   deriving (Show)
 
+-- Note: even though the official Twitter clients will display some accounts as
+-- "containing potentially sensitive content", this doesn't seem to be an actual
+-- field available on the API for users. Only individual _tweets_ have a
+-- "potentially sensitive" field.
+--
+-- I'm not totally sure how the client decides to display this warning. My guess
+-- is that it takes a threshold percentage of potentially sensitive tweets,
+-- since it appears that some accounts that have sensitive tweets still don't
+-- show the warning.
+--
+-- See also:
+-- - v1 API user object model: https://developer.twitter.com/en/docs/twitter-api/v1/data-dictionary/object-model/user
+-- - v2 API user object model: https://developer.twitter.com/en/docs/twitter-api/data-dictionary/object-model/user
+
 data LikedUser = LikedUser
   { userID :: Integer
   , screenName :: Text
-  , name :: Text
+  , displayName :: Text
+  , isVerified :: Bool
+  , createdAt :: UTCTime
+  , followerCount :: Int
+  , followingCount :: Int
+  , tweetCount :: Int
+  , likesCount :: Int
   }
   deriving (Show)
+
+-- TODO: is being followed by target user (note: NOT by API user)
 
 query :: QueryOptions -> IO ()
 query QueryOptions{..} = do
@@ -239,18 +264,31 @@ query QueryOptions{..} = do
     zero = Result{users = Map.empty, groupedLikes = Map.empty}
 
     f :: Result -> Status -> Result
-    f Result{..} Status{statusId, statusUser = User{userId, userName, userScreenName}} =
+    f Result{..} Status{statusId, statusUser = User{..}} =
       Result
-        { users = Map.insert userId (LikedUser{userID = userId, screenName = userScreenName, name = userName}) users
+        { users = Map.insert userId likedUser users
         , groupedLikes = Map.insertWith Set.union userId (Set.singleton statusId) groupedLikes
         }
+     where
+      likedUser =
+        LikedUser
+          { userID = userId
+          , screenName = userScreenName
+          , displayName = userName
+          , isVerified = userVerified
+          , createdAt = userCreatedAt
+          , followerCount = userFollowersCount
+          , followingCount = userFriendsCount
+          , tweetCount = userStatusesCount
+          , likesCount = userFavoritesCount
+          }
 
   render :: Result -> IO ()
   render Result{..} =
     putStrLn $
       tableString
         (fmap (const def) headers)
-        unicodeS
+        asciiS
         (titlesH headers)
         $ fmap rowG rows
    where
@@ -277,14 +315,32 @@ query QueryOptions{..} = do
       filterTopN = maybe id take topN
 
     headers :: [String]
-    headers = ["Rank", "Liked tweets", "Username"]
+    headers =
+      [ "Rank"
+      , "Liked tweets"
+      , "Handle"
+      , "Name"
+      , "Created"
+      , "Verified?"
+      , "Followers"
+      , "Following"
+      , "Tweets"
+      , "Likes"
+      ]
 
     rows :: [[String]]
     rows = f <$> zip [0 ..] filteredLikes
      where
       f :: (Integer, (LikedUser, Set TweetID)) -> [String]
-      f (i, (LikedUser{screenName}, likes)) =
+      f (i, (LikedUser{..}, likes)) =
         [ show (i + 1)
         , show (Set.size likes)
         , toString screenName
+        , toString displayName
+        , show createdAt
+        , show isVerified
+        , show followerCount
+        , show followingCount
+        , show tweetCount
+        , show likesCount
         ]
