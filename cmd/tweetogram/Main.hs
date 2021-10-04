@@ -95,8 +95,8 @@ data DownloadOptions = DownloadOptions
 downloadOptionsP :: Parser DownloadOptions
 downloadOptionsP =
   DownloadOptions
-    <$> strOption (long "twitter-consumer-api-key" <> help "Your \"Consumer Key: API Key\" from the Twitter Developer Portal")
-    <*> strOption (long "twitter-consumer-api-key-secret" <> help "Your \"Consumer Key: API Key Secret\" from the Twitter Developer Portal")
+    <$> strOption (long "twitter-consumer-api-key" <> help "Your \"Consumer Keys: API Key\" from the Twitter Developer Portal")
+    <*> strOption (long "twitter-consumer-api-key-secret" <> help "Your \"Consumer Keys: API Key Secret\" from the Twitter Developer Portal")
     <*> strOption (long "twitter-access-token" <> help "Your \"Authentication Tokens: Access Token\" from the Twitter Developer Portal")
     <*> strOption (long "twitter-access-token-secret" <> help "Your \"Authentication Tokens: Access Token Secret\" from the Twitter Developer Portal")
     <*> strOption (long "twitter-username" <> help "Username of the account to download liked tweets from")

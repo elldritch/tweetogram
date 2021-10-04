@@ -52,10 +52,10 @@ Usage: tweetogram download --twitter-consumer-api-key ARG
 
 Available options:
   --twitter-consumer-api-key ARG
-                           Your "Consumer Key: API Key" from the Twitter
+                           Your "Consumer Keys: API Key" from the Twitter
                            Developer Portal
   --twitter-consumer-api-key-secret ARG
-                           Your "Consumer Key: API Key Secret" from the Twitter
+                           Your "Consumer Keys: API Key Secret" from the Twitter
                            Developer Portal
   --twitter-access-token ARG
                            Your "Authentication Tokens: Access Token" from the
