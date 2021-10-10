@@ -21,9 +21,9 @@ import Data.Conduit.Combinators (
 import Data.Default (def)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
-import Data.Time (UTCTime)
+import Data.Time (UTCTime (..), timeToTimeOfDay)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (TimeZone, getCurrentTimeZone, utcToLocalTime)
+import Data.Time.LocalTime (TimeOfDay (..), TimeZone, getCurrentTimeZone, utcToLocalTime)
 import Data.Vector (Vector)
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Options.Applicative (
@@ -72,13 +72,13 @@ newtype Options = Options
 
 data Subcommand
   = Download DownloadOptions
-  | Query QueryOptions
+  | Query QuerySubcommand
 
 subcommandP :: Parser Subcommand
 subcommandP = hsubparser (downloadC <> queryC)
  where
-  downloadC = command "download" (info (Download <$> downloadOptionsP) $ progDesc "Download your liked tweets")
-  queryC = command "query" (info (Query <$> queryOptionsP) $ progDesc "Query statistics about liked tweets")
+  downloadC = command "download" (info (Download <$> downloadOptionsP) $ progDesc "Download tweets")
+  queryC = command "query" (info (Query <$> querySubcommandP) $ progDesc "Query statistics about tweets")
 
 optionsP :: Parser Options
 optionsP = Options <$> subcommandP
@@ -102,22 +102,41 @@ downloadOptionsP =
     <*> strOption (long "twitter-username" <> help "Username of the account to download liked tweets from")
     <*> strOption (long "data-dir" <> help "Filepath to a directory to save downloaded tweets")
 
+data QuerySubcommand
+  = QueryLikes QueryLikesOptions
+  | QueryActivity QueryActivityOptions
+
+querySubcommandP :: Parser QuerySubcommand
+querySubcommandP = hsubparser (likesC <> activityC)
+ where
+  likesC = command "likes" (info (QueryLikes <$> queryLikesOptionsP) $ progDesc "Show liked tweets")
+  activityC = command "activity" (info (QueryActivity <$> queryActivityOptionsP) $ progDesc "Show tweet activity")
+
 -- TODO:
 -- - Sort on different columns
 -- - Filter on different columns
 
-data QueryOptions = QueryOptions
+data QueryLikesOptions = QueryLikesOptions
   { dataDir :: FilePath
   , topN :: Maybe Int
   , minLikes :: Maybe Int
   }
 
-queryOptionsP :: Parser QueryOptions
-queryOptionsP =
-  QueryOptions
+queryLikesOptionsP :: Parser QueryLikesOptions
+queryLikesOptionsP =
+  QueryLikesOptions
     <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
     <*> optional (option auto (long "top" <> help "Only show top N most liked accounts" <> metavar "N"))
     <*> optional (option auto (long "min-likes" <> help "Only show accounts with at least N likes" <> metavar "N"))
+
+newtype QueryActivityOptions = QueryActivityOptions
+  { dataDir :: FilePath
+  }
+
+queryActivityOptionsP :: Parser QueryActivityOptions
+queryActivityOptionsP =
+  QueryActivityOptions
+    <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
 
 argsP :: ParserInfo Options
 argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your liked tweets")
@@ -127,7 +146,9 @@ main = do
   Options{subcommand} <- execParser argsP
   case subcommand of
     Download downloadOptions -> download downloadOptions
-    Query queryOptions -> query queryOptions
+    Query queryCmd -> case queryCmd of
+      QueryLikes queryLikesOptions -> queryLikes queryLikesOptions
+      QueryActivity queryActivityOptions -> queryActivity queryActivityOptions
 
 download :: DownloadOptions -> IO ()
 download DownloadOptions{..} = do
@@ -242,7 +263,7 @@ type UserID = Integer
 
 type TweetID = Integer
 
-data Result = Result
+data LikesResult = LikesResult
   { users :: Map UserID LikedUser
   , tweets :: Map TweetID LikedTweet
   , groupedLikes :: Map UserID (Set TweetID)
@@ -287,8 +308,8 @@ data LikedTweet = LikedTweet
   }
   deriving (Show)
 
-query :: QueryOptions -> IO ()
-query QueryOptions{..} = do
+queryLikes :: QueryLikesOptions -> IO ()
+queryLikes QueryLikesOptions{..} = do
   result <-
     try $
       runConduitRes $
@@ -311,19 +332,19 @@ query QueryOptions{..} = do
       Left err -> liftIO $ throwIO $ ParseException err
       Right status -> pure status
 
-  groupLikesByAuthor :: (Monad m) => ConduitT Status o m Result
+  groupLikesByAuthor :: (Monad m) => ConduitT Status o m LikesResult
   groupLikesByAuthor = foldlC f zero
    where
     zero =
-      Result
+      LikesResult
         { users = Map.empty
         , tweets = Map.empty
         , groupedLikes = Map.empty
         }
 
-    f :: Result -> Status -> Result
-    f Result{..} Status{statusUser = User{..}, ..} =
-      Result
+    f :: LikesResult -> Status -> LikesResult
+    f LikesResult{..} Status{statusUser = User{..}, ..} =
+      LikesResult
         { users = Map.insert userId likedUser users
         , tweets = Map.insert statusId likedTweet tweets
         , groupedLikes = Map.insertWith Set.union userId (Set.singleton statusId) groupedLikes
@@ -342,14 +363,17 @@ query QueryOptions{..} = do
           , likesCount = userFavoritesCount
           }
 
+      -- TODO: I should just roll this directly into the User field instead of
+      -- saving a list of all tweets. Use a Users Map update on sensitive
+      -- tweets. Add a User field called "has sensitive tweets".
       likedTweet =
         LikedTweet
           { tweetID = statusId
-          , possiblySensitive = fromMaybe False statusPossiblySensitive
+          , possiblySensitive = Just True == statusPossiblySensitive
           }
 
-  render :: Result -> IO ()
-  render Result{..} =
+  render :: LikesResult -> IO ()
+  render LikesResult{..} =
     putStrLn $
       tableString
         (fmap (const def) headers)
@@ -419,3 +443,44 @@ query QueryOptions{..} = do
         , show likesCount
         , show createdAt
         ]
+
+type Hour = Int
+
+type TweetCount = Int
+
+-- TODO: This should probably get broken up into modules.
+queryActivity :: QueryActivityOptions -> IO ()
+queryActivity QueryActivityOptions{..} = do
+  result <-
+    try $
+      runConduitRes $
+        sourceFile (dataDir </> "timeline.ndjson")
+          .| splitOnUnboundedE (== (toEnum $ ord '\n'))
+          .| decodeTweets
+          .| groupTweetsByTime
+
+  case result of
+    Left err -> case fromException err of
+      Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
+        putStrLn $ "Could not load liked tweets from " <> show filename <> ": " <> description
+      Just _ -> putStrLn $ "Unexpected error: " <> displayException err
+      Nothing -> putStrLn $ "Unexpected error: " <> displayException err
+    Right r -> render r
+ where
+  decodeTweets :: (MonadIO m) => ConduitT ByteString Status m ()
+  decodeTweets = mapMC $ \line -> do
+    case eitherDecodeStrict' line of
+      Left err -> liftIO $ throwIO $ ParseException err
+      Right status -> pure status
+
+  groupTweetsByTime :: (Monad m) => ConduitT Status o m (Map Hour TweetCount)
+  groupTweetsByTime = foldlC f Map.empty
+   where
+    f :: Map Hour TweetCount -> Status -> Map Hour TweetCount
+    f m Status{statusCreatedAt = UTCTime{utctDayTime = dayTime}} =
+      Map.insertWith (+) hour 1 m
+     where
+      TimeOfDay{todHour = hour} = timeToTimeOfDay dayTime
+
+  render :: Map Hour TweetCount -> IO ()
+  render m = print m
