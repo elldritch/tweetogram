@@ -18,13 +18,6 @@ import Data.Conduit.Combinators (
   sourceFile,
   splitOnUnboundedE,
  )
-import Data.Conduit.Throttle (
-  Conf,
-  newConf,
-  setInterval,
-  setMaxThroughput,
-  throttleProducer,
- )
 import Data.Default (def)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -147,18 +140,9 @@ download DownloadOptions{..} = do
             (runPipeline "Downloading liked tweets" (dataDir </> "likes.ndjson") connMgr likesReq twitterUsername)
     handleIOError result
  where
+  -- Request the maximum page size at a time to optimally consume rate limit.
   pageSize :: (Num a) => a
   pageSize = 200
-
-  -- We throttle on a per-page basis instead of a per-status basis because
-  -- otherwise the throttle "smears" the 75*200 statuses I can request across
-  -- the 15 minutes. This is slower overall than just throttling by page because
-  -- statuses that have already been loaded still get throttled.
-  throttleConf :: Conf a
-  throttleConf =
-    newConf
-      & setMaxThroughput 75
-      & setInterval (1000 * 60 * 15)
 
   twInfo :: TWInfo
   twInfo =
@@ -180,7 +164,7 @@ download DownloadOptions{..} = do
     IO ()
   runPipeline progress filename connMgr req user =
     runConduitRes $
-      throttleProducer throttleConf (getPages connMgr req user)
+      getPages connMgr req user
         .| concatMapE ((<> "\n") . toStrict . encode)
         .| void (showProgress progress)
         .| sinkFileCautious filename
