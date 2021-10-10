@@ -474,7 +474,7 @@ queryActivity QueryActivityOptions{..} = do
       Right status -> pure status
 
   groupTweetsByTime :: (Monad m) => ConduitT Status o m (Map Hour TweetCount)
-  groupTweetsByTime = foldlC f Map.empty
+  groupTweetsByTime = foldlC f $ Map.fromList $ zip [0 .. 23] $ repeat 0
    where
     f :: Map Hour TweetCount -> Status -> Map Hour TweetCount
     f m Status{statusCreatedAt = UTCTime{utctDayTime = dayTime}} =
@@ -483,4 +483,35 @@ queryActivity QueryActivityOptions{..} = do
       TimeOfDay{todHour = hour} = timeToTimeOfDay dayTime
 
   render :: Map Hour TweetCount -> IO ()
-  render m = print m
+  render m =
+    putStrLn $
+      tableString
+        (fmap (const def) headers)
+        asciiS
+        (titlesH headers)
+        $ fmap rowG rows
+   where
+    headers :: [String]
+    headers =
+      [ "Hour (UTC)"
+      , "Hour (PT)"
+      , "Hour (CT)"
+      , "Count"
+      , "Bar"
+      ]
+
+    rows :: [[String]]
+    rows =
+      ( \(h, c) ->
+          [ show h
+          , show ((h - 8) `mod` 24)
+          , show ((h - 5) `mod` 24)
+          , show c
+          , replicate (c * 30 `div` maxCount) 'X'
+          ]
+      )
+        <$> Map.toAscList m
+
+    maxCount = case Map.lookupMax m of
+      Just (_, c) -> c
+      _ -> error "impossible: Tweetogram invariant violated: tweet map is empty despite being initialized with zeroes"
