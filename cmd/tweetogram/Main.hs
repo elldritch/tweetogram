@@ -24,6 +24,7 @@ import Data.Conduit.Throttle (
   setMaxThroughput,
   throttleProducer,
  )
+import Data.Default (def)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Time (UTCTime)
@@ -51,20 +52,19 @@ import Text.Layout.Table (asciiS, rowG, tableString, titlesH)
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
-  FavoritesList,
+  HasParam,
   Manager,
   OAuth (..),
-  TWInfo (..),
-  UserParam (..),
-  def,
-  favoritesList,
+  TWInfo,
   newManager,
   setCredential,
   sourceWithMaxId,
   tlsManagerSettings,
   twitterOAuth,
  )
-import Web.Twitter.Conduit.Parameters (TweetMode (..))
+import Web.Twitter.Conduit.Api (FavoritesList, favoritesList)
+import Web.Twitter.Conduit.Parameters (TweetMode (..), UserParam (..))
+import Web.Twitter.Conduit.Status (StatusesUserTimeline, userTimeline)
 import Web.Twitter.Types (Status (..), User (..))
 
 newtype Options = Options
@@ -134,23 +134,21 @@ download :: DownloadOptions -> IO ()
 download DownloadOptions{..} = do
   connMgr <- newManager tlsManagerSettings
 
-  putStrLn "Downloading liked tweets. This may take a few minutes due to Twitter's API rate limits."
+  putStrLn "Downloading tweets. This may take a few minutes due to Twitter's API rate limits."
 
-  result <-
-    try $
-      runConduitRes $
-        throttleProducer throttleConf (getLikes connMgr twitterUsername)
-          .| concatMapE ((<> "\n") . toStrict . encode)
-          .| void showProgress
-          .| sinkFileCautious (dataDir </> "likes.ndjson")
+  handleIOError "download user timeline" $
+    runConduitRes $
+      throttleProducer throttleConf (getPages connMgr timelineReq twitterUsername)
+        .| concatMapE ((<> "\n") . toStrict . encode)
+        .| void (showProgress "Downloading user timeline")
+        .| sinkFileCautious (dataDir </> "timeline.ndjson")
 
-  case result of
-    Left err -> case fromException err of
-      Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
-        putStrLn $ "Could not download liked tweets to " <> show filename <> ": " <> description
-      Just _ -> putStrLn $ "Unexpected error: " <> displayException err
-      Nothing -> putStrLn $ "Unexpected error: " <> displayException err
-    Right () -> pure ()
+  handleIOError "download liked tweets" $
+    runConduitRes $
+      throttleProducer throttleConf (getPages connMgr likesReq twitterUsername)
+        .| concatMapE ((<> "\n") . toStrict . encode)
+        .| void (showProgress "Downloading liked tweets")
+        .| sinkFileCautious (dataDir </> "likes.ndjson")
  where
   pageSize :: (Num a) => a
   pageSize = 200
@@ -172,22 +170,50 @@ download DownloadOptions{..} = do
       (Credential [("oauth_token", twitterAccessToken), ("oauth_token_secret", twitterAccessTokenSecret)])
       def
 
-  getLikes :: (MonadIO m, PrimMonad m) => Manager -> Text -> ConduitT () (Vector Status) m ()
-  getLikes connMgr username =
-    sourceWithMaxId twInfo connMgr (getLikesReq username)
+  getPages ::
+    forall m supports.
+    ( MonadIO m
+    , PrimMonad m
+    , HasParam "max_id" Integer supports
+    , HasParam "count" Integer supports
+    , HasParam "tweet_mode" TweetMode supports
+    ) =>
+    Manager ->
+    (Text -> APIRequest supports [Status]) ->
+    Text ->
+    ConduitT () (Vector Status) m ()
+  getPages connMgr makeReq username =
+    sourceWithMaxId twInfo connMgr req
       .| conduitVector pageSize
+   where
+    req :: APIRequest supports [Status]
+    req =
+      makeReq username
+        & #count ?~ pageSize
+        & #tweet_mode ?~ Extended
 
-  getLikesReq :: Text -> APIRequest FavoritesList [Status]
-  getLikesReq user =
-    favoritesList
-      (Just (ScreenNameParam $ toString user))
-      & #count ?~ pageSize
-      & #tweet_mode ?~ Extended
+  timelineReq :: Text -> APIRequest StatusesUserTimeline [Status]
+  timelineReq = userTimeline . ScreenNameParam . toString
 
-  showProgress :: (MonadIO m) => ConduitT i i m Int
-  showProgress = (`mapAccumWhileM` 1) $ \x i -> do
-    putStrLn $ "Downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total)."
+  likesReq :: Text -> APIRequest FavoritesList [Status]
+  likesReq = favoritesList . Just . ScreenNameParam . toString
+
+  showProgress :: (MonadIO m) => String -> ConduitT i i m Int
+  showProgress name = (`mapAccumWhileM` 1) $ \x i -> do
+    putStrLn $ name <> ": downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total)."
     pure (Right (i + 1, x))
+
+  handleIOError :: String -> IO a -> IO a
+  handleIOError name action = do
+    result <- try action
+    case result of
+      Right r -> pure r
+      Left err -> die $ fmt err
+   where
+    fmt err = case fromException err of
+      Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
+        "Could not " <> name <> " to " <> show filename <> ": " <> description
+      _ -> "Unexpected error: " <> displayException err
 
 newtype ParseException = ParseException
   { errorMessage :: String
