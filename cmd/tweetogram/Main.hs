@@ -23,25 +23,33 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Time (UTCTime (..), timeToTimeOfDay)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (TimeOfDay (..), TimeZone, getCurrentTimeZone, utcToLocalTime)
+import Data.Time.Format (defaultTimeLocale, formatTime)
+import Data.Time.LocalTime (
+  TimeOfDay (..),
+  TimeZone,
+  getCurrentTimeZone,
+  utcToLocalTime,
+ )
 import Data.Vector (Vector)
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
-import Options.Applicative (
-  Parser,
-  ParserInfo,
+import GHC.Show qualified (Show (..))
+import Options.Applicative.Builder (
+  ReadM,
   auto,
   command,
-  execParser,
+  eitherReader,
   help,
-  helper,
-  hsubparser,
   info,
   long,
   metavar,
   option,
   progDesc,
+  showDefault,
   strOption,
+  value,
  )
+import Options.Applicative.Extra (execParser, helper, hsubparser)
+import Options.Applicative.Types (Parser, ParserInfo)
 import Relude
 import System.Console.Concurrent (outputConcurrent, withConcurrentOutput)
 import System.FilePath ((</>))
@@ -77,8 +85,8 @@ data Subcommand
 subcommandP :: Parser Subcommand
 subcommandP = hsubparser (downloadC <> queryC)
  where
-  downloadC = command "download" (info (Download <$> downloadOptionsP) $ progDesc "Download tweets")
-  queryC = command "query" (info (Query <$> querySubcommandP) $ progDesc "Query statistics about tweets")
+  downloadC = command "download" (info (Download <$> downloadOptionsP) $ progDesc "Download your tweets")
+  queryC = command "query" (info (Query <$> querySubcommandP) $ progDesc "Show statistics about your tweets")
 
 optionsP :: Parser Options
 optionsP = Options <$> subcommandP
@@ -129,17 +137,38 @@ queryLikesOptionsP =
     <*> optional (option auto (long "top" <> help "Only show top N most liked accounts" <> metavar "N"))
     <*> optional (option auto (long "min-likes" <> help "Only show accounts with at least N likes" <> metavar "N"))
 
-newtype QueryActivityOptions = QueryActivityOptions
+data QueryActivityOptions = QueryActivityOptions
   { dataDir :: FilePath
+  , -- TODO:
+    -- - Support non-integer offsets.
+    -- - Support "+N" positive offsets.
+    -- - Support "+H:MM" offsets e.g. "-9:30" for French Polynesia.
+    -- - Support timezone-by-name, with lookup of corresponding offset?
+    tzOffset :: Maybe Int
+  , timeMode :: TimeMode
   }
+
+data TimeMode = Display24H | Display12H
+
+instance Show TimeMode where
+  show Display12H = "12h"
+  show Display24H = "24h"
+
+readTimeMode :: ReadM TimeMode
+readTimeMode = eitherReader $ \case
+  "24h" -> Right Display24H
+  "12h" -> Right Display12H
+  _ -> Left "could not read time mode: must be either \"24h\" or \"12h\""
 
 queryActivityOptionsP :: Parser QueryActivityOptions
 queryActivityOptionsP =
   QueryActivityOptions
     <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
+    <*> optional (option auto (long "tz-offset" <> help "Timezone offset (+/-N from GMT) to check" <> metavar "+/-N"))
+    <*> option readTimeMode (long "time-mode" <> help "Time display mode (either \"24h\" or \"12h\")" <> value Display24H <> showDefault)
 
 argsP :: ParserInfo Options
-argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your liked tweets")
+argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your tweets")
 
 main :: IO ()
 main = do
@@ -210,7 +239,7 @@ download DownloadOptions{..} = do
         & #tweet_mode ?~ Extended
 
   timelineReq :: Text -> APIRequest StatusesUserTimeline [Status]
-  timelineReq = userTimeline . ScreenNameParam . toString
+  timelineReq = (#include_rts ?~ True) . userTimeline . ScreenNameParam . toString
 
   likesReq :: Text -> APIRequest FavoritesList [Status]
   likesReq = favoritesList . Just . ScreenNameParam . toString
@@ -493,25 +522,29 @@ queryActivity QueryActivityOptions{..} = do
    where
     headers :: [String]
     headers =
-      [ "Hour (UTC)"
-      , "Hour (PT)"
-      , "Hour (CT)"
-      , "Count"
-      , "Bar"
-      ]
+      ["Time (UTC)"]
+        ++ ( case tzOffset of
+              Just x | x >= 0 -> ["Time (UTC+" <> show x <> ")"]
+              Just x -> ["Time (UTC" <> show x <> ")"]
+              Nothing -> []
+           )
+        ++ [ "Count"
+           , "Bar"
+           ]
 
     rows :: [[String]]
     rows =
       ( \(h, c) ->
-          [ show h
-          , show ((h - 8) `mod` 24)
-          , show ((h - 5) `mod` 24)
-          , show c
-          , replicate (c * 30 `div` maxCount) 'X'
-          ]
+          [fmtHour h]
+            ++ maybe [] (\tzo -> [fmtHour $ h + tzo]) tzOffset
+            ++ [ show c
+               , replicate (c * 30 `div` maxCount) 'X'
+               ]
       )
         <$> Map.toAscList m
 
-    maxCount = case Map.lookupMax m of
-      Just (_, c) -> c
-      _ -> error "impossible: Tweetogram invariant violated: tweet map is empty despite being initialized with zeroes"
+    maxCount = Map.foldr max 0 m
+
+    fmtHour h = case timeMode of
+      Display24H -> formatTime defaultTimeLocale "%R" (TimeOfDay{todHour = (h + 2) `mod` 24, todMin = 0, todSec = 0})
+      Display12H -> formatTime defaultTimeLocale "%l %p" (TimeOfDay{todHour = (h + 2) `mod` 24, todMin = 0, todSec = 0})
