@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Conduit (PrimMonad, foldlC, mapMC)
+import Control.Concurrent.Async (concurrently)
 import Control.Exception (throwIO, try)
 import Control.Lens.Setter ((?~))
 import Data.Aeson (eitherDecodeStrict', encode)
@@ -47,6 +48,7 @@ import Options.Applicative (
   strOption,
  )
 import Relude
+import System.Console.Concurrent (outputConcurrent, withConcurrentOutput)
 import System.FilePath ((</>))
 import Text.Layout.Table (asciiS, rowG, tableString, titlesH)
 import Web.Twitter.Conduit (
@@ -136,19 +138,14 @@ download DownloadOptions{..} = do
 
   putStrLn "Downloading tweets. This may take a few minutes due to Twitter's API rate limits."
 
-  handleIOError "download user timeline" $
-    runConduitRes $
-      throttleProducer throttleConf (getPages connMgr timelineReq twitterUsername)
-        .| concatMapE ((<> "\n") . toStrict . encode)
-        .| void (showProgress "Downloading user timeline")
-        .| sinkFileCautious (dataDir </> "timeline.ndjson")
-
-  handleIOError "download liked tweets" $
-    runConduitRes $
-      throttleProducer throttleConf (getPages connMgr likesReq twitterUsername)
-        .| concatMapE ((<> "\n") . toStrict . encode)
-        .| void (showProgress "Downloading liked tweets")
-        .| sinkFileCautious (dataDir </> "likes.ndjson")
+  withConcurrentOutput $ do
+    result <-
+      try $
+        void $
+          concurrently
+            (runPipeline "Downloading user timeline" (dataDir </> "timeline.ndjson") connMgr timelineReq twitterUsername)
+            (runPipeline "Downloading liked tweets" (dataDir </> "likes.ndjson") connMgr likesReq twitterUsername)
+    handleIOError result
  where
   pageSize :: (Num a) => a
   pageSize = 200
@@ -169,6 +166,24 @@ download DownloadOptions{..} = do
       (twitterOAuth{oauthConsumerKey = twitterConsumerKey, oauthConsumerSecret = twitterConsumerSecret})
       (Credential [("oauth_token", twitterAccessToken), ("oauth_token_secret", twitterAccessTokenSecret)])
       def
+
+  runPipeline ::
+    ( HasParam "max_id" Integer supports
+    , HasParam "count" Integer supports
+    , HasParam "tweet_mode" TweetMode supports
+    ) =>
+    String ->
+    FilePath ->
+    Manager ->
+    (Text -> APIRequest supports [Status]) ->
+    Text ->
+    IO ()
+  runPipeline progress filename connMgr req user =
+    runConduitRes $
+      throttleProducer throttleConf (getPages connMgr req user)
+        .| concatMapE ((<> "\n") . toStrict . encode)
+        .| void (showProgress progress)
+        .| sinkFileCautious filename
 
   getPages ::
     forall m supports.
@@ -200,19 +215,17 @@ download DownloadOptions{..} = do
 
   showProgress :: (MonadIO m) => String -> ConduitT i i m Int
   showProgress name = (`mapAccumWhileM` 1) $ \x i -> do
-    putStrLn $ name <> ": downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total)."
+    liftIO $ outputConcurrent $ name <> ": downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total).\n"
     pure (Right (i + 1, x))
 
-  handleIOError :: String -> IO a -> IO a
-  handleIOError name action = do
-    result <- try action
-    case result of
-      Right r -> pure r
-      Left err -> die $ fmt err
+  handleIOError :: Either SomeException a -> IO a
+  handleIOError result = case result of
+    Right r -> pure r
+    Left err -> die $ fmt err
    where
     fmt err = case fromException err of
       Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
-        "Could not " <> name <> " to " <> show filename <> ": " <> description
+        "Could not download tweets to " <> show filename <> ": " <> description
       _ -> "Unexpected error: " <> displayException err
 
 newtype ParseException = ParseException
