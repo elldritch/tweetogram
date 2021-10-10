@@ -22,6 +22,8 @@ import Data.Default (def)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Time (UTCTime)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Time.LocalTime (TimeZone, getCurrentTimeZone, utcToLocalTime)
 import Data.Vector (Vector)
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Options.Applicative (
@@ -51,6 +53,8 @@ import Web.Twitter.Conduit (
   Manager,
   OAuth (..),
   TWInfo,
+  TwitterError (..),
+  TwitterErrorMessage (..),
   newManager,
   setCredential,
   sourceWithMaxId,
@@ -128,17 +132,14 @@ main = do
 download :: DownloadOptions -> IO ()
 download DownloadOptions{..} = do
   connMgr <- newManager tlsManagerSettings
-
-  putStrLn "Downloading tweets. This may take a few minutes due to Twitter's API rate limits."
-
   withConcurrentOutput $ do
     result <-
       try $
         void $
           concurrently
-            (runPipeline "Downloading user timeline" (dataDir </> "timeline.ndjson") connMgr timelineReq twitterUsername)
-            (runPipeline "Downloading liked tweets" (dataDir </> "likes.ndjson") connMgr likesReq twitterUsername)
-    handleIOError result
+            (runPipeline connMgr "Downloading user timeline" (dataDir </> "timeline.ndjson") $ timelineReq twitterUsername)
+            (runPipeline connMgr "Downloading liked tweets" (dataDir </> "likes.ndjson") $ likesReq twitterUsername)
+    handleError result
  where
   -- Request the maximum page size at a time to optimally consume rate limit.
   pageSize :: (Num a) => a
@@ -156,21 +157,19 @@ download DownloadOptions{..} = do
     , HasParam "count" Integer supports
     , HasParam "tweet_mode" TweetMode supports
     ) =>
+    Manager ->
     String ->
     FilePath ->
-    Manager ->
-    (Text -> APIRequest supports [Status]) ->
-    Text ->
+    APIRequest supports [Status] ->
     IO ()
-  runPipeline progress filename connMgr req user =
+  runPipeline connMgr progress filename req =
     runConduitRes $
-      getPages connMgr req user
+      getPages connMgr req
         .| concatMapE ((<> "\n") . toStrict . encode)
         .| void (showProgress progress)
         .| sinkFileCautious filename
 
   getPages ::
-    forall m supports.
     ( MonadIO m
     , PrimMonad m
     , HasParam "max_id" Integer supports
@@ -178,16 +177,14 @@ download DownloadOptions{..} = do
     , HasParam "tweet_mode" TweetMode supports
     ) =>
     Manager ->
-    (Text -> APIRequest supports [Status]) ->
-    Text ->
+    APIRequest supports [Status] ->
     ConduitT () (Vector Status) m ()
-  getPages connMgr makeReq username =
-    sourceWithMaxId twInfo connMgr req
+  getPages connMgr req =
+    sourceWithMaxId twInfo connMgr req'
       .| conduitVector pageSize
    where
-    req :: APIRequest supports [Status]
-    req =
-      makeReq username
+    req' =
+      req
         & #count ?~ pageSize
         & #tweet_mode ?~ Extended
 
@@ -202,15 +199,36 @@ download DownloadOptions{..} = do
     liftIO $ outputConcurrent $ name <> ": downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total).\n"
     pure (Right (i + 1, x))
 
-  handleIOError :: Either SomeException a -> IO a
-  handleIOError result = case result of
-    Right r -> pure r
-    Left err -> die $ fmt err
+  handleError :: Either SomeException a -> IO a
+  handleError result = do
+    tz <- getCurrentTimeZone
+    case result of
+      Right r -> pure r
+      Left err -> die $ fromMaybe ("Unexpected error: " <> displayException err) $ fmtErrs tz err
    where
-    fmt err = case fromException err of
-      Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
-        "Could not download tweets to " <> show filename <> ": " <> description
-      _ -> "Unexpected error: " <> displayException err
+    fmtErrs :: TimeZone -> SomeException -> Maybe String
+    fmtErrs tz err =
+      (fromException err >>= fmtIOErr)
+        <|> (fromException err >>= fmtTwitterErr tz)
+
+    fmtIOErr :: IOException -> Maybe String
+    fmtIOErr (IOError _ NoSuchThing _ description _ (Just filename)) =
+      Just $ "Could not download tweets to " <> show filename <> ": " <> description
+    fmtIOErr _ = Nothing
+
+    fmtTwitterErr :: TimeZone -> TwitterError -> Maybe String
+    fmtTwitterErr tz (TwitterErrorResponse _ headers [TwitterErrorMessage 88 _]) =
+      Just $
+        fromMaybe "Error: Twitter API rate limit reached" $ do
+          (_, resetTime) <- find ((== "x-rate-limit-reset") . fst) headers
+          timestamp <- readMaybe $ decodeUtf8 resetTime
+          pure $
+            "Error: Twitter API rate limit reached (rate limit resets at "
+              <> show (utcToLocalTime tz $ posixSecondsToUTCTime $ fromInteger timestamp)
+              <> " "
+              <> show tz
+              <> ")"
+    fmtTwitterErr _ _ = Nothing
 
 newtype ParseException = ParseException
   { errorMessage :: String
