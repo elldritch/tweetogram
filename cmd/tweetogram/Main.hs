@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Conduit (PrimMonad, foldlC, mapMC)
+import Control.Concurrent.Async (concurrently)
 import Control.Exception (throwIO, try)
 import Control.Lens.Setter ((?~))
 import Data.Aeson (eitherDecodeStrict', encode)
@@ -17,54 +18,60 @@ import Data.Conduit.Combinators (
   sourceFile,
   splitOnUnboundedE,
  )
-import Data.Conduit.Throttle (
-  Conf,
-  newConf,
-  setInterval,
-  setMaxThroughput,
-  throttleProducer,
- )
+import Data.Default (def)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
-import Data.Time (UTCTime)
+import Data.Time (UTCTime (..), timeToTimeOfDay)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Time.Format (defaultTimeLocale, formatTime)
+import Data.Time.LocalTime (
+  TimeOfDay (..),
+  TimeZone,
+  getCurrentTimeZone,
+  utcToLocalTime,
+ )
 import Data.Vector (Vector)
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
-import Options.Applicative (
-  Parser,
-  ParserInfo,
+import GHC.Show qualified (Show (..))
+import Options.Applicative.Builder (
+  ReadM,
   auto,
   command,
-  execParser,
+  eitherReader,
   help,
-  helper,
-  hsubparser,
   info,
   long,
   metavar,
   option,
   progDesc,
+  showDefault,
   strOption,
+  value,
  )
+import Options.Applicative.Extra (execParser, helper, hsubparser)
+import Options.Applicative.Types (Parser, ParserInfo)
 import Relude
+import System.Console.Concurrent (outputConcurrent, withConcurrentOutput)
 import System.FilePath ((</>))
 import Text.Layout.Table (asciiS, rowG, tableString, titlesH)
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
-  FavoritesList,
+  HasParam,
   Manager,
   OAuth (..),
-  TWInfo (..),
-  UserParam (..),
-  def,
-  favoritesList,
+  TWInfo,
+  TwitterError (..),
+  TwitterErrorMessage (..),
   newManager,
   setCredential,
   sourceWithMaxId,
   tlsManagerSettings,
   twitterOAuth,
  )
-import Web.Twitter.Conduit.Parameters (TweetMode (..))
+import Web.Twitter.Conduit.Api (FavoritesList, favoritesList)
+import Web.Twitter.Conduit.Parameters (TweetMode (..), UserParam (..))
+import Web.Twitter.Conduit.Status (StatusesUserTimeline, userTimeline)
 import Web.Twitter.Types (Status (..), User (..))
 
 newtype Options = Options
@@ -73,13 +80,13 @@ newtype Options = Options
 
 data Subcommand
   = Download DownloadOptions
-  | Query QueryOptions
+  | Query QuerySubcommand
 
 subcommandP :: Parser Subcommand
 subcommandP = hsubparser (downloadC <> queryC)
  where
-  downloadC = command "download" (info (Download <$> downloadOptionsP) $ progDesc "Download your liked tweets")
-  queryC = command "query" (info (Query <$> queryOptionsP) $ progDesc "Query statistics about liked tweets")
+  downloadC = command "download" (info (Download <$> downloadOptionsP) $ progDesc "Download your tweets")
+  queryC = command "query" (info (Query <$> querySubcommandP) $ progDesc "Show statistics about your tweets")
 
 optionsP :: Parser Options
 optionsP = Options <$> subcommandP
@@ -103,67 +110,90 @@ downloadOptionsP =
     <*> strOption (long "twitter-username" <> help "Username of the account to download liked tweets from")
     <*> strOption (long "data-dir" <> help "Filepath to a directory to save downloaded tweets")
 
+data QuerySubcommand
+  = QueryLikes QueryLikesOptions
+  | QueryActivity QueryActivityOptions
+
+querySubcommandP :: Parser QuerySubcommand
+querySubcommandP = hsubparser (likesC <> activityC)
+ where
+  likesC = command "likes" (info (QueryLikes <$> queryLikesOptionsP) $ progDesc "Show liked tweets")
+  activityC = command "activity" (info (QueryActivity <$> queryActivityOptionsP) $ progDesc "Show tweet activity")
+
 -- TODO:
 -- - Sort on different columns
 -- - Filter on different columns
 
-data QueryOptions = QueryOptions
+data QueryLikesOptions = QueryLikesOptions
   { dataDir :: FilePath
   , topN :: Maybe Int
   , minLikes :: Maybe Int
   }
 
-queryOptionsP :: Parser QueryOptions
-queryOptionsP =
-  QueryOptions
+queryLikesOptionsP :: Parser QueryLikesOptions
+queryLikesOptionsP =
+  QueryLikesOptions
     <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
     <*> optional (option auto (long "top" <> help "Only show top N most liked accounts" <> metavar "N"))
     <*> optional (option auto (long "min-likes" <> help "Only show accounts with at least N likes" <> metavar "N"))
 
+data QueryActivityOptions = QueryActivityOptions
+  { dataDir :: FilePath
+  , -- TODO:
+    -- - Support non-integer offsets.
+    -- - Support "+N" positive offsets.
+    -- - Support "+H:MM" offsets e.g. "-9:30" for French Polynesia.
+    -- - Support timezone-by-name, with lookup of corresponding offset?
+    tzOffset :: Maybe Int
+  , timeMode :: TimeMode
+  }
+
+data TimeMode = Display24H | Display12H
+
+instance Show TimeMode where
+  show Display12H = "12h"
+  show Display24H = "24h"
+
+readTimeMode :: ReadM TimeMode
+readTimeMode = eitherReader $ \case
+  "24h" -> Right Display24H
+  "12h" -> Right Display12H
+  _ -> Left "could not read time mode: must be either \"24h\" or \"12h\""
+
+queryActivityOptionsP :: Parser QueryActivityOptions
+queryActivityOptionsP =
+  QueryActivityOptions
+    <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
+    <*> optional (option auto (long "tz-offset" <> help "Timezone offset (+/-N from GMT) to check" <> metavar "+/-N"))
+    <*> option readTimeMode (long "time-mode" <> help "Time display mode (either \"24h\" or \"12h\")" <> value Display24H <> showDefault)
+
 argsP :: ParserInfo Options
-argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your liked tweets")
+argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your tweets")
 
 main :: IO ()
 main = do
   Options{subcommand} <- execParser argsP
   case subcommand of
     Download downloadOptions -> download downloadOptions
-    Query queryOptions -> query queryOptions
+    Query queryCmd -> case queryCmd of
+      QueryLikes queryLikesOptions -> queryLikes queryLikesOptions
+      QueryActivity queryActivityOptions -> queryActivity queryActivityOptions
 
 download :: DownloadOptions -> IO ()
 download DownloadOptions{..} = do
   connMgr <- newManager tlsManagerSettings
-
-  putStrLn "Downloading liked tweets. This may take a few minutes due to Twitter's API rate limits."
-
-  result <-
-    try $
-      runConduitRes $
-        throttleProducer throttleConf (getLikes connMgr twitterUsername)
-          .| concatMapE ((<> "\n") . toStrict . encode)
-          .| void showProgress
-          .| sinkFileCautious (dataDir </> "likes.ndjson")
-
-  case result of
-    Left err -> case fromException err of
-      Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
-        putStrLn $ "Could not download liked tweets to " <> show filename <> ": " <> description
-      Just _ -> putStrLn $ "Unexpected error: " <> displayException err
-      Nothing -> putStrLn $ "Unexpected error: " <> displayException err
-    Right () -> pure ()
+  withConcurrentOutput $ do
+    result <-
+      try $
+        void $
+          concurrently
+            (runPipeline connMgr "Downloading user timeline" (dataDir </> "timeline.ndjson") $ timelineReq twitterUsername)
+            (runPipeline connMgr "Downloading liked tweets" (dataDir </> "likes.ndjson") $ likesReq twitterUsername)
+    handleError result
  where
+  -- Request the maximum page size at a time to optimally consume rate limit.
   pageSize :: (Num a) => a
   pageSize = 200
-
-  -- We throttle on a per-page basis instead of a per-status basis because
-  -- otherwise the throttle "smears" the 75*200 statuses I can request across
-  -- the 15 minutes. This is slower overall than just throttling by page because
-  -- statuses that have already been loaded still get throttled.
-  throttleConf :: Conf a
-  throttleConf =
-    newConf
-      & setMaxThroughput 75
-      & setInterval (1000 * 60 * 15)
 
   twInfo :: TWInfo
   twInfo =
@@ -172,22 +202,83 @@ download DownloadOptions{..} = do
       (Credential [("oauth_token", twitterAccessToken), ("oauth_token_secret", twitterAccessTokenSecret)])
       def
 
-  getLikes :: (MonadIO m, PrimMonad m) => Manager -> Text -> ConduitT () (Vector Status) m ()
-  getLikes connMgr username =
-    sourceWithMaxId twInfo connMgr (getLikesReq username)
+  runPipeline ::
+    ( HasParam "max_id" Integer supports
+    , HasParam "count" Integer supports
+    , HasParam "tweet_mode" TweetMode supports
+    ) =>
+    Manager ->
+    String ->
+    FilePath ->
+    APIRequest supports [Status] ->
+    IO ()
+  runPipeline connMgr progress filename req =
+    runConduitRes $
+      getPages connMgr req
+        .| concatMapE ((<> "\n") . toStrict . encode)
+        .| void (showProgress progress)
+        .| sinkFileCautious filename
+
+  getPages ::
+    ( MonadIO m
+    , PrimMonad m
+    , HasParam "max_id" Integer supports
+    , HasParam "count" Integer supports
+    , HasParam "tweet_mode" TweetMode supports
+    ) =>
+    Manager ->
+    APIRequest supports [Status] ->
+    ConduitT () (Vector Status) m ()
+  getPages connMgr req =
+    sourceWithMaxId twInfo connMgr req'
       .| conduitVector pageSize
+   where
+    req' =
+      req
+        & #count ?~ pageSize
+        & #tweet_mode ?~ Extended
 
-  getLikesReq :: Text -> APIRequest FavoritesList [Status]
-  getLikesReq user =
-    favoritesList
-      (Just (ScreenNameParam $ toString user))
-      & #count ?~ pageSize
-      & #tweet_mode ?~ Extended
+  timelineReq :: Text -> APIRequest StatusesUserTimeline [Status]
+  timelineReq = (#include_rts ?~ True) . userTimeline . ScreenNameParam . toString
 
-  showProgress :: (MonadIO m) => ConduitT i i m Int
-  showProgress = (`mapAccumWhileM` 1) $ \x i -> do
-    putStrLn $ "Downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total)."
+  likesReq :: Text -> APIRequest FavoritesList [Status]
+  likesReq = favoritesList . Just . ScreenNameParam . toString
+
+  showProgress :: (MonadIO m) => String -> ConduitT i i m Int
+  showProgress name = (`mapAccumWhileM` 1) $ \x i -> do
+    liftIO $ outputConcurrent $ name <> ": downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total).\n"
     pure (Right (i + 1, x))
+
+  handleError :: Either SomeException a -> IO a
+  handleError result = do
+    tz <- getCurrentTimeZone
+    case result of
+      Right r -> pure r
+      Left err -> die $ fromMaybe ("Unexpected error: " <> displayException err) $ fmtErrs tz err
+   where
+    fmtErrs :: TimeZone -> SomeException -> Maybe String
+    fmtErrs tz err =
+      (fromException err >>= fmtIOErr)
+        <|> (fromException err >>= fmtTwitterErr tz)
+
+    fmtIOErr :: IOException -> Maybe String
+    fmtIOErr (IOError _ NoSuchThing _ description _ (Just filename)) =
+      Just $ "Could not download tweets to " <> show filename <> ": " <> description
+    fmtIOErr _ = Nothing
+
+    fmtTwitterErr :: TimeZone -> TwitterError -> Maybe String
+    fmtTwitterErr tz (TwitterErrorResponse _ headers [TwitterErrorMessage 88 _]) =
+      Just $
+        fromMaybe "Error: Twitter API rate limit reached" $ do
+          (_, resetTime) <- find ((== "x-rate-limit-reset") . fst) headers
+          timestamp <- readMaybe $ decodeUtf8 resetTime
+          pure $
+            "Error: Twitter API rate limit reached (rate limit resets at "
+              <> show (utcToLocalTime tz $ posixSecondsToUTCTime $ fromInteger timestamp)
+              <> " "
+              <> show tz
+              <> ")"
+    fmtTwitterErr _ _ = Nothing
 
 newtype ParseException = ParseException
   { errorMessage :: String
@@ -201,7 +292,7 @@ type UserID = Integer
 
 type TweetID = Integer
 
-data Result = Result
+data LikesResult = LikesResult
   { users :: Map UserID LikedUser
   , tweets :: Map TweetID LikedTweet
   , groupedLikes :: Map UserID (Set TweetID)
@@ -246,8 +337,8 @@ data LikedTweet = LikedTweet
   }
   deriving (Show)
 
-query :: QueryOptions -> IO ()
-query QueryOptions{..} = do
+queryLikes :: QueryLikesOptions -> IO ()
+queryLikes QueryLikesOptions{..} = do
   result <-
     try $
       runConduitRes $
@@ -270,19 +361,19 @@ query QueryOptions{..} = do
       Left err -> liftIO $ throwIO $ ParseException err
       Right status -> pure status
 
-  groupLikesByAuthor :: (Monad m) => ConduitT Status o m Result
+  groupLikesByAuthor :: (Monad m) => ConduitT Status o m LikesResult
   groupLikesByAuthor = foldlC f zero
    where
     zero =
-      Result
+      LikesResult
         { users = Map.empty
         , tweets = Map.empty
         , groupedLikes = Map.empty
         }
 
-    f :: Result -> Status -> Result
-    f Result{..} Status{statusUser = User{..}, ..} =
-      Result
+    f :: LikesResult -> Status -> LikesResult
+    f LikesResult{..} Status{statusUser = User{..}, ..} =
+      LikesResult
         { users = Map.insert userId likedUser users
         , tweets = Map.insert statusId likedTweet tweets
         , groupedLikes = Map.insertWith Set.union userId (Set.singleton statusId) groupedLikes
@@ -301,14 +392,17 @@ query QueryOptions{..} = do
           , likesCount = userFavoritesCount
           }
 
+      -- TODO: I should just roll this directly into the User field instead of
+      -- saving a list of all tweets. Use a Users Map update on sensitive
+      -- tweets. Add a User field called "has sensitive tweets".
       likedTweet =
         LikedTweet
           { tweetID = statusId
-          , possiblySensitive = fromMaybe False statusPossiblySensitive
+          , possiblySensitive = Just True == statusPossiblySensitive
           }
 
-  render :: Result -> IO ()
-  render Result{..} =
+  render :: LikesResult -> IO ()
+  render LikesResult{..} =
     putStrLn $
       tableString
         (fmap (const def) headers)
@@ -378,3 +472,79 @@ query QueryOptions{..} = do
         , show likesCount
         , show createdAt
         ]
+
+type Hour = Int
+
+type TweetCount = Int
+
+-- TODO: This should probably get broken up into modules.
+queryActivity :: QueryActivityOptions -> IO ()
+queryActivity QueryActivityOptions{..} = do
+  result <-
+    try $
+      runConduitRes $
+        sourceFile (dataDir </> "timeline.ndjson")
+          .| splitOnUnboundedE (== (toEnum $ ord '\n'))
+          .| decodeTweets
+          .| groupTweetsByTime
+
+  case result of
+    Left err -> case fromException err of
+      Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
+        putStrLn $ "Could not load liked tweets from " <> show filename <> ": " <> description
+      Just _ -> putStrLn $ "Unexpected error: " <> displayException err
+      Nothing -> putStrLn $ "Unexpected error: " <> displayException err
+    Right r -> render r
+ where
+  decodeTweets :: (MonadIO m) => ConduitT ByteString Status m ()
+  decodeTweets = mapMC $ \line -> do
+    case eitherDecodeStrict' line of
+      Left err -> liftIO $ throwIO $ ParseException err
+      Right status -> pure status
+
+  groupTweetsByTime :: (Monad m) => ConduitT Status o m (Map Hour TweetCount)
+  groupTweetsByTime = foldlC f $ Map.fromList $ zip [0 .. 23] $ repeat 0
+   where
+    f :: Map Hour TweetCount -> Status -> Map Hour TweetCount
+    f m Status{statusCreatedAt = UTCTime{utctDayTime = dayTime}} =
+      Map.insertWith (+) hour 1 m
+     where
+      TimeOfDay{todHour = hour} = timeToTimeOfDay dayTime
+
+  render :: Map Hour TweetCount -> IO ()
+  render m =
+    putStrLn $
+      tableString
+        (fmap (const def) headers)
+        asciiS
+        (titlesH headers)
+        $ fmap rowG rows
+   where
+    headers :: [String]
+    headers =
+      ["Time (UTC)"]
+        ++ ( case tzOffset of
+              Just x | x >= 0 -> ["Time (UTC+" <> show x <> ")"]
+              Just x -> ["Time (UTC" <> show x <> ")"]
+              Nothing -> []
+           )
+        ++ [ "Count"
+           , "Bar"
+           ]
+
+    rows :: [[String]]
+    rows =
+      ( \(h, c) ->
+          [fmtHour h]
+            ++ maybe [] (\tzo -> [fmtHour $ h + tzo]) tzOffset
+            ++ [ show c
+               , replicate (c * 30 `div` maxCount) 'X'
+               ]
+      )
+        <$> Map.toAscList m
+
+    maxCount = Map.foldr max 0 m
+
+    fmtHour h = case timeMode of
+      Display24H -> formatTime defaultTimeLocale "%R" (TimeOfDay{todHour = (h + 2) `mod` 24, todMin = 0, todSec = 0})
+      Display12H -> formatTime defaultTimeLocale "%l %p" (TimeOfDay{todHour = (h + 2) `mod` 24, todMin = 0, todSec = 0})

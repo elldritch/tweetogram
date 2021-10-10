@@ -1,13 +1,15 @@
 # tweetogram
 
-Tweetogram creates a ~~histogram~~ ranking of the Twitter accounts that you liked the most.
+Tweetogram shows interesting statistics about your tweets and likes.
 
 ## Usage
 
+### Quickstart
+
 ```sh
-# First, download your liked tweets. This is a separate step because Twitter's
-# API has a really strict rate limit, so we download tweets first and then
-# operate on downloaded tweets.
+# First, download your tweets. This is a separate step because Twitter's API has
+# a really strict rate limit, so we download tweets first and then operate on
+# downloaded tweets.
 
 # Make a directory to hold the downloaded tweets.
 mkdir /tmp/tweetogram
@@ -22,25 +24,29 @@ cabal run tweetogram -- download \
   --twitter-username YOUR_USERNAME \
   --data-dir /tmp/tweetogram
 
-
-# Once your liked tweets are downloaded, you can render your rankings.
-cabal run tweetogram -- query --data-dir /tmp/tweetogram
+# Now you can display interesting data about your tweets.
+cabal run tweetogram -- query likes --data-dir /tmp/tweetogram
+cabal run tweetogram -- query activity --data-dir /tmp/tweetogram
 ```
+
+### Commands
 
 For more options, see `--help`:
 
 ```
 $ cabal run tweetogram -- --help
 Usage: tweetogram COMMAND
-  Compute statistics about your liked tweets
+  Compute statistics about your tweets
 
 Available options:
   -h,--help                Show this help text
 
 Available commands:
-  download                 Download your liked tweets
-  query                    Query statistics about liked tweets
+  download                 Download your tweets
+  query                    Show statistics about your tweets
 ```
+
+#### Download tweets
 
 ```
 $ cabal run tweetogram -- download --help
@@ -49,7 +55,7 @@ Usage: tweetogram download --twitter-consumer-api-key ARG
                            --twitter-access-token ARG
                            --twitter-access-token-secret ARG
                            --twitter-username ARG --data-dir ARG
-  Download your liked tweets
+  Download your tweets
 
 Available options:
   --twitter-consumer-api-key ARG
@@ -69,10 +75,12 @@ Available options:
   -h,--help                Show this help text
 ```
 
+#### Show liked tweets
+
 ```
-$ cabal run tweetogram -- query --help
-Usage: tweetogram query --data-dir ARG [--top N] [--min-likes N]
-  Query statistics about liked tweets
+$ cabal run tweetogram -- query likes --help
+Usage: tweetogram query likes --data-dir ARG [--top N] [--min-likes N]
+  Show liked tweets
 
 Available options:
   --data-dir ARG           Filepath to a directory containing downloaded tweets
@@ -127,4 +135,76 @@ Here's a truncated sample of what the output looks like:
 +------+--------------+-----------------+---------------------------------------------------+-----------+--------+-----------+-----------+--------+--------+-------------------------+
 | 20   | 26           | gentleeeeeeecat | GENTLECAT                                         | False     | False  | 117830    | 47        | 841    | 1445   | 2017-01-03 13:43:06 UTC |
 +------+--------------+-----------------+---------------------------------------------------+-----------+--------+-----------+-----------+--------+--------+-------------------------+
+```
+
+#### Show post activity
+
+```
+$ cabal run tweetogram -- query activity --help
+Usage: tweetogram query activity --data-dir ARG [--tz-offset +/-N]
+                                 [--time-mode ARG]
+  Show tweet activity
+
+Available options:
+  --data-dir ARG           Filepath to a directory containing downloaded tweets
+  --tz-offset +/-N         Timezone offset (+/-N from GMT) to check
+  --time-mode ARG          Time display mode (either "24h" or "12h")
+                           (default: 24h)
+  -h,--help                Show this help text
+```
+
+Here's some sample output:
+
+```
++------------+--------------+-------+--------------------------------+
+| Time (UTC) | Time (UTC+2) | Count |              Bar               |
++------------+--------------+-------+--------------------------------+
+| 02:00      | 04:00        | 1     |                                |
++------------+--------------+-------+--------------------------------+
+| 03:00      | 05:00        | 3     |                                |
++------------+--------------+-------+--------------------------------+
+| 04:00      | 06:00        | 13    | X                              |
++------------+--------------+-------+--------------------------------+
+| 05:00      | 07:00        | 2     |                                |
++------------+--------------+-------+--------------------------------+
+| 06:00      | 08:00        | 27    | XXX                            |
++------------+--------------+-------+--------------------------------+
+| 07:00      | 09:00        | 66    | XXXXXXX                        |
++------------+--------------+-------+--------------------------------+
+| 08:00      | 10:00        | 117   | XXXXXXXXXXXXXX                 |
++------------+--------------+-------+--------------------------------+
+| 09:00      | 11:00        | 197   | XXXXXXXXXXXXXXXXXXXXXXX        |
++------------+--------------+-------+--------------------------------+
+| 10:00      | 12:00        | 205   | XXXXXXXXXXXXXXXXXXXXXXXX       |
++------------+--------------+-------+--------------------------------+
+| 11:00      | 13:00        | 201   | XXXXXXXXXXXXXXXXXXXXXXXX       |
++------------+--------------+-------+--------------------------------+
+| 12:00      | 14:00        | 190   | XXXXXXXXXXXXXXXXXXXXXX         |
++------------+--------------+-------+--------------------------------+
+| 13:00      | 15:00        | 191   | XXXXXXXXXXXXXXXXXXXXXXX        |
++------------+--------------+-------+--------------------------------+
+| 14:00      | 16:00        | 229   | XXXXXXXXXXXXXXXXXXXXXXXXXXX    |
++------------+--------------+-------+--------------------------------+
+| 15:00      | 17:00        | 177   | XXXXXXXXXXXXXXXXXXXXX          |
++------------+--------------+-------+--------------------------------+
+| 16:00      | 18:00        | 193   | XXXXXXXXXXXXXXXXXXXXXXX        |
++------------+--------------+-------+--------------------------------+
+| 17:00      | 19:00        | 216   | XXXXXXXXXXXXXXXXXXXXXXXXXX     |
++------------+--------------+-------+--------------------------------+
+| 18:00      | 20:00        | 185   | XXXXXXXXXXXXXXXXXXXXXX         |
++------------+--------------+-------+--------------------------------+
+| 19:00      | 21:00        | 249   | XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX |
++------------+--------------+-------+--------------------------------+
+| 20:00      | 22:00        | 222   | XXXXXXXXXXXXXXXXXXXXXXXXXX     |
++------------+--------------+-------+--------------------------------+
+| 21:00      | 23:00        | 220   | XXXXXXXXXXXXXXXXXXXXXXXXXX     |
++------------+--------------+-------+--------------------------------+
+| 22:00      | 00:00        | 179   | XXXXXXXXXXXXXXXXXXXXX          |
++------------+--------------+-------+--------------------------------+
+| 23:00      | 01:00        | 116   | XXXXXXXXXXXXX                  |
++------------+--------------+-------+--------------------------------+
+| 00:00      | 02:00        | 43    | XXXXX                          |
++------------+--------------+-------+--------------------------------+
+| 01:00      | 03:00        | 7     |                                |
++------------+--------------+-------+--------------------------------+
 ```
