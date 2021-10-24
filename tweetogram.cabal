@@ -97,7 +97,10 @@ executable tweetogram
   main-is:        Main.hs
 
   -- cabal-fmt: expand cmd/tweetogram -Main
-  other-modules:  Tweetogram.CLI
+  other-modules:
+    Tweetogram.CLI
+    Tweetogram.CLI.Options
+
   hs-source-dirs: cmd/tweetogram
   build-depends:
     , aeson                 ^>=1.5.6.0

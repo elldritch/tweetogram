@@ -6,10 +6,11 @@ module Tweetogram.Store (
   ParseException (..),
 ) where
 
-import Conduit (mapMC)
 import Control.Exception (throwIO)
 import Control.Monad.Trans.Resource (MonadResource)
 import Data.Aeson (FromJSON, ToJSON, eitherDecodeStrict', encode)
+
+import Conduit (mapMC)
 import Data.Conduit (ConduitM, ConduitT, (.|))
 import Data.Conduit.Combinators (
   sinkFileCautious,
@@ -18,6 +19,7 @@ import Data.Conduit.Combinators (
  )
 import Data.Conduit.Combinators qualified as C
 import Data.MonoTraversable (Element, MonoFoldable)
+
 import Relude
 
 -- | Store items by serializing them to NDJSON one item at a time.

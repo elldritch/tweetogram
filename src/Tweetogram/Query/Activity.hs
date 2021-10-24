@@ -4,12 +4,15 @@ module Tweetogram.Query.Activity (
   tweetActivity,
 ) where
 
-import Conduit (foldlC)
-import Data.Conduit (ConduitT)
 import Data.Map qualified as Map
 import Data.Time (TimeOfDay (..), UTCTime (..), timeToTimeOfDay)
-import Relude
+
+import Conduit (foldlC)
+import Data.Conduit (ConduitT)
+
 import Web.Twitter.Types (Status (..))
+
+import Relude
 
 -- | An Int from 0 to 23 (inclusive) indicating the hour time-of-day when a
 -- tweet was posted.

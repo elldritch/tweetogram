@@ -1,5 +1,6 @@
 module Tweetogram.CLI () where
 
+{-
 import Data.Conduit (ConduitT)
 import Data.Conduit.Combinators (mapAccumWhileM)
 import Relude
@@ -10,6 +11,7 @@ onProgress :: (MonadIO m) => (PageCount -> IO ()) -> ConduitT i i m Int
 onProgress f = (`mapAccumWhileM` 1) $ \x i -> do
   liftIO $ f i
   pure (Right (i + 1, x))
+-}
 
 {-
 

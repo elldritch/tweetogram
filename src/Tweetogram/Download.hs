@@ -17,14 +17,15 @@ module Tweetogram.Download (
   likesR,
 ) where
 
-import Conduit (PrimMonad)
 import Control.Lens.Setter ((?~))
+import Data.Default (def)
+import Data.Vector (Vector)
+
+import Conduit (PrimMonad)
 import Data.Conduit (ConduitT, (.|))
 import Data.Conduit.Combinators (conduitVector)
 import Data.Conduit.Combinators qualified as Conduit
-import Data.Default (def)
-import Data.Vector (Vector)
-import Relude
+
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
@@ -42,6 +43,8 @@ import Web.Twitter.Conduit.Api (FavoritesList, favoritesList)
 import Web.Twitter.Conduit.Parameters (TweetMode (..), UserParam (..))
 import Web.Twitter.Conduit.Status (StatusesUserTimeline, userTimeline)
 import Web.Twitter.Types (Status (..))
+
+import Relude
 
 -- | Options for constructing a 'Client'.
 data DownloadOptions = DownloadOptions

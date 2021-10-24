@@ -6,12 +6,15 @@ module Tweetogram.Query.Likes (
   likedAuthors,
 ) where
 
-import Conduit (foldlC)
-import Data.Conduit (ConduitT)
 import Data.Map.Strict qualified as Map
 import Data.Time.Clock (UTCTime)
-import Relude
+
+import Conduit (foldlC)
+import Data.Conduit (ConduitT)
+
 import Web.Twitter.Types (Status (..), User (..))
+
+import Relude
 
 -- | A Twitter user's ID.
 type UserID = Integer
