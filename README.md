@@ -208,3 +208,11 @@ Here's some sample output:
 | 01:00      | 03:00        | 7     |                                |
 +------------+--------------+-------+--------------------------------+
 ```
+
+## Development
+
+For Haddock documentation, use:
+
+```sh
+cabal build --enable-documentation
+```

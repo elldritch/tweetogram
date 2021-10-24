@@ -1,4 +1,6 @@
 cradle:
   cabal:
-    - path: "cmd/tweetogram/Main.hs"
+    - path: "./src"
+      component: "tweetogram:lib:tweetogram"
+    - path: "./cmd/tweetogram"
       component: "tweetogram:exe:tweetogram"
