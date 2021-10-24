@@ -19,5 +19,6 @@ Delegated to application:
 - Printing progress
 - Coordinating concurrency
 - Printing user-friendly error messages
+- Rendering output
 
 -}
