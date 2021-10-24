@@ -1,6 +1,6 @@
 # Changelog for `tweetogram`
 
-## v0.2.0.0 _TBA_
+## v0.2.0.0 _2021-10-24_
 
 - `tweetogram download` now downloads user timeline tweets.
 - `tweetogram query` is now split into `tweetogram query likes` and `tweetogram query activity`.
