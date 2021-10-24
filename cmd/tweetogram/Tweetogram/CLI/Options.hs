@@ -10,28 +10,17 @@ module Tweetogram.CLI.Options (
   subcommandP,
   QuerySubcommand (..),
   querySubcommandP,
-  QueryLikesOptions (..),
-  queryLikesOptionsP,
 ) where
 
 import Relude
 
-import Options.Applicative.Builder (
-  auto,
-  command,
-  help,
-  info,
-  long,
-  metavar,
-  option,
-  progDesc,
-  strOption,
- )
+import Options.Applicative.Builder (command, info, progDesc)
 import Options.Applicative.Extra (helper, hsubparser)
 import Options.Applicative.Types (Parser, ParserInfo)
 
 import Tweetogram.CLI.Download (DownloadOptions, downloadOptionsP)
 import Tweetogram.CLI.Query.Activity (QueryActivityOptions, queryActivityOptionsP)
+import Tweetogram.CLI.Query.Likes (QueryLikesOptions, queryLikesOptionsP)
 
 newtype Options = Options
   { subcommand :: Subcommand
@@ -59,23 +48,6 @@ querySubcommandP = hsubparser (likesC <> activityC)
  where
   likesC = command "likes" (info (QueryLikes <$> queryLikesOptionsP) $ progDesc "Show liked tweets")
   activityC = command "activity" (info (QueryActivity <$> queryActivityOptionsP) $ progDesc "Show tweet activity")
-
--- TODO:
--- - Sort on different columns
--- - Filter on different columns
-
-data QueryLikesOptions = QueryLikesOptions
-  { dataDir :: FilePath
-  , topN :: Maybe Int
-  , minLikes :: Maybe Int
-  }
-
-queryLikesOptionsP :: Parser QueryLikesOptions
-queryLikesOptionsP =
-  QueryLikesOptions
-    <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
-    <*> optional (option auto (long "top" <> help "Only show top N most liked accounts" <> metavar "N"))
-    <*> optional (option auto (long "min-likes" <> help "Only show accounts with at least N likes" <> metavar "N"))
 
 argsP :: ParserInfo Options
 argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your tweets")

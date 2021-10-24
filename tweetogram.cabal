@@ -99,7 +99,6 @@ executable tweetogram
 
   -- cabal-fmt: expand cmd/tweetogram -Main
   other-modules:
-    Tweetogram.CLI
     Tweetogram.CLI.Download
     Tweetogram.CLI.Errors
     Tweetogram.CLI.Options
