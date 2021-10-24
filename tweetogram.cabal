@@ -101,7 +101,10 @@ executable tweetogram
   other-modules:
     Tweetogram.CLI
     Tweetogram.CLI.Download
+    Tweetogram.CLI.Errors
     Tweetogram.CLI.Options
+    Tweetogram.CLI.Query.Activity
+    Tweetogram.CLI.Store
 
   hs-source-dirs: cmd/tweetogram
   build-depends:

@@ -17,11 +17,7 @@ import Data.Conduit.Combinators qualified as C
 import Data.Default (def)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
-import Data.Time (UTCTime (..), timeToTimeOfDay)
-import Data.Time.Format (defaultTimeLocale, formatTime)
-import Data.Time.LocalTime (
-  TimeOfDay (..),
- )
+import Data.Time (UTCTime (..))
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Options.Applicative.Extra (execParser)
 import System.FilePath ((</>))
@@ -31,13 +27,12 @@ import Web.Twitter.Types (Status (..), User (..))
 import Tweetogram.CLI.Download (download)
 import Tweetogram.CLI.Options (
   Options (..),
-  QueryActivityOptions (..),
   QueryLikesOptions (..),
   QuerySubcommand (..),
   Subcommand (..),
-  TimeMode (..),
   argsP,
  )
+import Tweetogram.CLI.Query.Activity (queryActivity)
 
 main :: IO ()
 main = do
@@ -240,79 +235,3 @@ queryLikes QueryLikesOptions{..} = do
         , show likesCount
         , show createdAt
         ]
-
-type Hour = Int
-
-type TweetCount = Int
-
--- TODO: This should probably get broken up into modules.
-queryActivity :: QueryActivityOptions -> IO ()
-queryActivity QueryActivityOptions{..} = do
-  result <-
-    try $
-      runConduitRes $
-        sourceFile (dataDir </> "timeline.ndjson")
-          .| splitOnUnboundedE (== (toEnum $ ord '\n'))
-          .| decodeTweets
-          .| groupTweetsByTime
-
-  case result of
-    Left err -> case fromException err of
-      Just (IOError _ NoSuchThing _ description _ (Just filename)) ->
-        putStrLn $ "Could not load liked tweets from " <> show filename <> ": " <> description
-      Just _ -> putStrLn $ "Unexpected error: " <> displayException err
-      Nothing -> putStrLn $ "Unexpected error: " <> displayException err
-    Right r -> render r
- where
-  decodeTweets :: (MonadIO m) => ConduitT ByteString Status m ()
-  decodeTweets = C.mapM $ \line -> do
-    case eitherDecodeStrict' line of
-      Left err -> liftIO $ throwIO $ ParseException err
-      Right status -> pure status
-
-  groupTweetsByTime :: (Monad m) => ConduitT Status o m (Map Hour TweetCount)
-  groupTweetsByTime = C.foldl f $ Map.fromList $ zip [0 .. 23] $ repeat 0
-   where
-    f :: Map Hour TweetCount -> Status -> Map Hour TweetCount
-    f m Status{statusCreatedAt = UTCTime{utctDayTime = dayTime}} =
-      Map.insertWith (+) hour 1 m
-     where
-      TimeOfDay{todHour = hour} = timeToTimeOfDay dayTime
-
-  render :: Map Hour TweetCount -> IO ()
-  render m =
-    putStrLn $
-      tableString
-        (fmap (const def) headers)
-        asciiS
-        (titlesH headers)
-        $ fmap rowG rows
-   where
-    headers :: [String]
-    headers =
-      ["Time (UTC)"]
-        ++ ( case tzOffset of
-              Just x | x >= 0 -> ["Time (UTC+" <> show x <> ")"]
-              Just x -> ["Time (UTC" <> show x <> ")"]
-              Nothing -> []
-           )
-        ++ [ "Count"
-           , "Bar"
-           ]
-
-    rows :: [[String]]
-    rows =
-      ( \(h, c) ->
-          [fmtHour h]
-            ++ maybe [] (\tzo -> [fmtHour $ h + tzo]) tzOffset
-            ++ [ show c
-               , replicate (c * 30 `div` maxCount) 'X'
-               ]
-      )
-        <$> Map.toAscList m
-
-    maxCount = Map.foldr max 0 m
-
-    fmtHour h = case timeMode of
-      Display24H -> formatTime defaultTimeLocale "%R" (TimeOfDay{todHour = (h + 2) `mod` 24, todMin = 0, todSec = 0})
-      Display12H -> formatTime defaultTimeLocale "%l %p" (TimeOfDay{todHour = (h + 2) `mod` 24, todMin = 0, todSec = 0})

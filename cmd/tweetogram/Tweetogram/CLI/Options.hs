@@ -12,35 +12,26 @@ module Tweetogram.CLI.Options (
   querySubcommandP,
   QueryLikesOptions (..),
   queryLikesOptionsP,
-  QueryActivityOptions (..),
-  queryActivityOptionsP,
-
-  -- * New types
-  TimeMode (..),
 ) where
 
 import Relude
 
-import GHC.Show qualified (Show (..))
 import Options.Applicative.Builder (
-  ReadM,
   auto,
   command,
-  eitherReader,
   help,
   info,
   long,
   metavar,
   option,
   progDesc,
-  showDefault,
   strOption,
-  value,
  )
 import Options.Applicative.Extra (helper, hsubparser)
 import Options.Applicative.Types (Parser, ParserInfo)
 
 import Tweetogram.CLI.Download (DownloadOptions, downloadOptionsP)
+import Tweetogram.CLI.Query.Activity (QueryActivityOptions, queryActivityOptionsP)
 
 newtype Options = Options
   { subcommand :: Subcommand
@@ -85,36 +76,6 @@ queryLikesOptionsP =
     <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
     <*> optional (option auto (long "top" <> help "Only show top N most liked accounts" <> metavar "N"))
     <*> optional (option auto (long "min-likes" <> help "Only show accounts with at least N likes" <> metavar "N"))
-
-data QueryActivityOptions = QueryActivityOptions
-  { dataDir :: FilePath
-  , -- TODO:
-    -- - Support non-integer offsets.
-    -- - Support "+N" positive offsets.
-    -- - Support "+H:MM" offsets e.g. "-9:30" for French Polynesia.
-    -- - Support timezone-by-name, with lookup of corresponding offset?
-    tzOffset :: Maybe Int
-  , timeMode :: TimeMode
-  }
-
-data TimeMode = Display24H | Display12H
-
-instance Show TimeMode where
-  show Display12H = "12h"
-  show Display24H = "24h"
-
-readTimeMode :: ReadM TimeMode
-readTimeMode = eitherReader $ \case
-  "24h" -> Right Display24H
-  "12h" -> Right Display12H
-  _ -> Left "could not read time mode: must be either \"24h\" or \"12h\""
-
-queryActivityOptionsP :: Parser QueryActivityOptions
-queryActivityOptionsP =
-  QueryActivityOptions
-    <$> strOption (long "data-dir" <> help "Filepath to a directory containing downloaded tweets")
-    <*> optional (option auto (long "tz-offset" <> help "Timezone offset (+/-N from GMT) to check" <> metavar "+/-N"))
-    <*> option readTimeMode (long "time-mode" <> help "Time display mode (either \"24h\" or \"12h\")" <> value Display24H <> showDefault)
 
 argsP :: ParserInfo Options
 argsP = info (optionsP <**> helper) (progDesc "Compute statistics about your tweets")

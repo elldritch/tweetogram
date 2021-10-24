@@ -3,7 +3,7 @@ module Tweetogram.CLI.Download (
   DownloadOptions (..),
   downloadOptionsP,
 
-  -- * CLI action
+  -- * Command implementation
   download,
 ) where
 
@@ -26,7 +26,6 @@ import Data.Time.LocalTime (
   getCurrentTimeZone,
   utcToLocalTime,
  )
-import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Options.Applicative (Parser, help, long, strOption)
 import System.Console.Concurrent (outputConcurrent, withConcurrentOutput)
 import System.FilePath ((</>))
@@ -37,6 +36,8 @@ import Web.Twitter.Conduit (
 import Web.Twitter.Conduit.Parameters (UserParam (..))
 import Web.Twitter.Types (Status (..))
 
+import Tweetogram.CLI.Errors (showExceptions)
+import Tweetogram.CLI.Store (fmtStoreErr)
 import Tweetogram.Download (
   Client,
   Config (..),
@@ -83,7 +84,11 @@ download DownloadOptions{..} = do
           concurrently
             (runConduitRes $ pipe sourceTimeline "timeline.ndjson" $ showProgress "Downloading user timeline")
             (runConduitRes $ pipe sourceLikes "likes.ndjson" $ showProgress "Downloading liked tweets")
-    handleError result
+    showExceptions result $ \err -> do
+      tz <- getCurrentTimeZone
+      pure $
+        (fromException err >>= fmtStoreErr)
+          <|> (fromException err >>= fmtTwitterErr tz)
  where
   pageSize :: Int
   pageSize = 200
@@ -113,33 +118,16 @@ download DownloadOptions{..} = do
       liftIO $ f i
       pure (Right (i + 1, x))
 
-  handleError :: Either SomeException a -> IO a
-  handleError result = do
-    tz <- getCurrentTimeZone
-    case result of
-      Right r -> pure r
-      Left err -> die $ fromMaybe ("Unexpected error: " <> displayException err) $ fmtErrs tz err
-   where
-    fmtErrs :: TimeZone -> SomeException -> Maybe String
-    fmtErrs tz err =
-      (fromException err >>= fmtIOErr)
-        <|> (fromException err >>= fmtTwitterErr tz)
-
-    fmtIOErr :: IOException -> Maybe String
-    fmtIOErr (IOError _ NoSuchThing _ description _ (Just filename)) =
-      Just $ "Could not download tweets to " <> show filename <> ": " <> description
-    fmtIOErr _ = Nothing
-
-    fmtTwitterErr :: TimeZone -> TwitterError -> Maybe String
-    fmtTwitterErr tz (TwitterErrorResponse _ headers [TwitterErrorMessage 88 _]) =
-      Just $
-        fromMaybe "Error: Twitter API rate limit reached" $ do
-          (_, resetTime) <- find ((== "x-rate-limit-reset") . fst) headers
-          timestamp <- readMaybe $ decodeUtf8 resetTime
-          pure $
-            "Error: Twitter API rate limit reached (rate limit resets at "
-              <> show (utcToLocalTime tz $ posixSecondsToUTCTime $ fromInteger timestamp)
-              <> " "
-              <> show tz
-              <> ")"
-    fmtTwitterErr _ _ = Nothing
+  fmtTwitterErr :: TimeZone -> TwitterError -> Maybe String
+  fmtTwitterErr tz (TwitterErrorResponse _ headers [TwitterErrorMessage 88 _]) =
+    Just $
+      fromMaybe "Error: Twitter API rate limit reached" $ do
+        (_, resetTime) <- find ((== "x-rate-limit-reset") . fst) headers
+        timestamp <- readMaybe $ decodeUtf8 resetTime
+        pure $
+          "Error: Twitter API rate limit reached (rate limit resets at "
+            <> show (utcToLocalTime tz $ posixSecondsToUTCTime $ fromInteger timestamp)
+            <> " "
+            <> show tz
+            <> ")"
+  fmtTwitterErr _ _ = Nothing
