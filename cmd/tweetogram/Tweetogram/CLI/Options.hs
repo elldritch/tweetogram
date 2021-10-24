@@ -8,8 +8,6 @@ module Tweetogram.CLI.Options (
   optionsP,
   Subcommand (..),
   subcommandP,
-  DownloadOptions (..),
-  downloadOptionsP,
   QuerySubcommand (..),
   querySubcommandP,
   QueryLikesOptions (..),
@@ -21,8 +19,9 @@ module Tweetogram.CLI.Options (
   TimeMode (..),
 ) where
 
-import GHC.Show qualified (Show (..))
+import Relude
 
+import GHC.Show qualified (Show (..))
 import Options.Applicative.Builder (
   ReadM,
   auto,
@@ -41,7 +40,7 @@ import Options.Applicative.Builder (
 import Options.Applicative.Extra (helper, hsubparser)
 import Options.Applicative.Types (Parser, ParserInfo)
 
-import Relude
+import Tweetogram.CLI.Download (DownloadOptions, downloadOptionsP)
 
 newtype Options = Options
   { subcommand :: Subcommand
@@ -59,25 +58,6 @@ subcommandP = hsubparser (downloadC <> queryC)
  where
   downloadC = command "download" (info (Download <$> downloadOptionsP) $ progDesc "Download your tweets")
   queryC = command "query" (info (Query <$> querySubcommandP) $ progDesc "Show statistics about your tweets")
-
-data DownloadOptions = DownloadOptions
-  { twitterConsumerKey :: ByteString
-  , twitterConsumerSecret :: ByteString
-  , twitterAccessToken :: ByteString
-  , twitterAccessTokenSecret :: ByteString
-  , twitterUsername :: Text
-  , dataDir :: FilePath
-  }
-
-downloadOptionsP :: Parser DownloadOptions
-downloadOptionsP =
-  DownloadOptions
-    <$> strOption (long "twitter-consumer-api-key" <> help "Your \"Consumer Keys: API Key\" from the Twitter Developer Portal")
-    <*> strOption (long "twitter-consumer-api-key-secret" <> help "Your \"Consumer Keys: API Key Secret\" from the Twitter Developer Portal")
-    <*> strOption (long "twitter-access-token" <> help "Your \"Authentication Tokens: Access Token\" from the Twitter Developer Portal")
-    <*> strOption (long "twitter-access-token-secret" <> help "Your \"Authentication Tokens: Access Token Secret\" from the Twitter Developer Portal")
-    <*> strOption (long "twitter-username" <> help "Username of the account to download liked tweets from")
-    <*> strOption (long "data-dir" <> help "Filepath to a directory to save downloaded tweets")
 
 data QuerySubcommand
   = QueryLikes QueryLikesOptions

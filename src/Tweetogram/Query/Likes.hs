@@ -6,15 +6,13 @@ module Tweetogram.Query.Likes (
   likedAuthors,
 ) where
 
+import Relude
+
+import Data.Conduit (ConduitT)
+import Data.Conduit.Combinators qualified as C
 import Data.Map.Strict qualified as Map
 import Data.Time.Clock (UTCTime)
-
-import Conduit (foldlC)
-import Data.Conduit (ConduitT)
-
 import Web.Twitter.Types (Status (..), User (..))
-
-import Relude
 
 -- | A Twitter user's ID.
 type UserID = Integer
@@ -67,7 +65,7 @@ data Liked = Liked
 
 -- | Fold a conduit of liked tweets by counting them by author.
 likedAuthors :: (Monad m) => ConduitT Status o m Liked
-likedAuthors = foldlC f zero
+likedAuthors = C.foldl f zero
  where
   zero :: Liked
   zero = Liked{users = Map.empty, tweetsByUser = Map.empty}

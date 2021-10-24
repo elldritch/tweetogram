@@ -85,6 +85,7 @@ library
     , lens                  ^>=5.0.1
     , mono-traversable      ^>=1.0.15
     , optparse-applicative  ^>=0.16.1
+    , primitive             ^>=0.7.2
     , resourcet             ^>=1.2.4
     , table-layout          ^>=0.9.1
     , time                  ^>=1.11
@@ -99,6 +100,7 @@ executable tweetogram
   -- cabal-fmt: expand cmd/tweetogram -Main
   other-modules:
     Tweetogram.CLI
+    Tweetogram.CLI.Download
     Tweetogram.CLI.Options
 
   hs-source-dirs: cmd/tweetogram
@@ -112,6 +114,8 @@ executable tweetogram
     , filepath              ^>=1.4.2.1
     , lens                  ^>=5.0.1
     , optparse-applicative  ^>=0.16.1.0
+    , primitive             ^>=0.7.2
+    , resourcet             ^>=1.2.4
     , table-layout          ^>=0.9.1.0
     , time                  ^>=1.11
     , tweetogram

@@ -1,7 +1,7 @@
 -- | Download conduits of tweets.
 module Tweetogram.Download (
   -- * Constructing clients
-  DownloadOptions (..),
+  Config (..),
   Client,
   newClient,
   maxPageSize,
@@ -17,15 +17,15 @@ module Tweetogram.Download (
   likesR,
 ) where
 
-import Control.Lens.Setter ((?~))
-import Data.Default (def)
-import Data.Vector (Vector)
+import Relude
 
-import Conduit (PrimMonad)
+import Control.Lens.Setter ((?~))
+import Control.Monad.Primitive (PrimMonad)
 import Data.Conduit (ConduitT, (.|))
 import Data.Conduit.Combinators (conduitVector)
-import Data.Conduit.Combinators qualified as Conduit
-
+import Data.Conduit.Combinators qualified as C
+import Data.Default (def)
+import Data.Vector (Vector)
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
@@ -44,10 +44,8 @@ import Web.Twitter.Conduit.Parameters (TweetMode (..), UserParam (..))
 import Web.Twitter.Conduit.Status (StatusesUserTimeline, userTimeline)
 import Web.Twitter.Types (Status (..))
 
-import Relude
-
 -- | Options for constructing a 'Client'.
-data DownloadOptions = DownloadOptions
+data Config = Config
   { twitterConsumerKey :: ByteString
   , twitterConsumerSecret :: ByteString
   , twitterAccessToken :: ByteString
@@ -65,8 +63,8 @@ data Client = Client
   }
 
 -- | Construct a new client instance.
-newClient :: (MonadIO m) => DownloadOptions -> m Client
-newClient DownloadOptions{..} = do
+newClient :: (MonadIO m) => Config -> m Client
+newClient Config{..} = do
   connectionManager <- liftIO $ newManager tlsManagerSettings
   pure Client{connectionManager, twInfo, pageSize}
  where
@@ -104,7 +102,7 @@ getStatuses ::
   ConduitT () Status m ()
 getStatuses client req =
   getPages client req
-    .| Conduit.concatMap id
+    .| C.concatMap id
 
 -- | Given an API request repeatable with @max_id@, load pages of statuses as a
 -- conduit.
