@@ -29,16 +29,11 @@ import Options.Applicative.Builder (
 import Options.Applicative.Types (Parser)
 
 import Control.Exception (try)
-import Data.Conduit (
-  runConduitRes,
-  (.|),
- )
+import Data.Conduit (runConduitRes, (.|))
 import Data.Default (def)
 import Data.Map.Strict qualified as Map
 import Data.Time.Format (defaultTimeLocale, formatTime)
-import Data.Time.LocalTime (
-  TimeOfDay (..),
- )
+import Data.Time.LocalTime (TimeOfDay (..))
 import System.FilePath ((</>))
 import Text.Layout.Table (asciiS, rowG, tableString, titlesH)
 

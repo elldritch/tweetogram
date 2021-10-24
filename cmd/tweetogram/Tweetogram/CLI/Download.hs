@@ -12,27 +12,14 @@ import Relude
 import Control.Concurrent.Async (concurrently)
 import Control.Exception (try)
 import Control.Monad.Trans.Resource (ResourceT)
-import Data.Conduit (
-  ConduitT,
-  runConduitRes,
-  (.|),
- )
-import Data.Conduit.Combinators (
-  mapAccumWhileM,
- )
+import Data.Conduit (ConduitT, runConduitRes, (.|))
+import Data.Conduit.Combinators (mapAccumWhileM)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (
-  TimeZone,
-  getCurrentTimeZone,
-  utcToLocalTime,
- )
+import Data.Time.LocalTime (TimeZone, getCurrentTimeZone, utcToLocalTime)
 import Options.Applicative (Parser, help, long, strOption)
 import System.Console.Concurrent (outputConcurrent, withConcurrentOutput)
 import System.FilePath ((</>))
-import Web.Twitter.Conduit (
-  TwitterError (..),
-  TwitterErrorMessage (..),
- )
+import Web.Twitter.Conduit (TwitterError (..), TwitterErrorMessage (..))
 import Web.Twitter.Conduit.Parameters (UserParam (..))
 import Web.Twitter.Types (Status (..))
 

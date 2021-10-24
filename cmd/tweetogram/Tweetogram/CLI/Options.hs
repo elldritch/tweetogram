@@ -19,7 +19,10 @@ import Options.Applicative.Extra (helper, hsubparser)
 import Options.Applicative.Types (Parser, ParserInfo)
 
 import Tweetogram.CLI.Download (DownloadOptions, downloadOptionsP)
-import Tweetogram.CLI.Query.Activity (QueryActivityOptions, queryActivityOptionsP)
+import Tweetogram.CLI.Query.Activity (
+  QueryActivityOptions,
+  queryActivityOptionsP,
+ )
 import Tweetogram.CLI.Query.Likes (QueryLikesOptions, queryLikesOptionsP)
 
 newtype Options = Options

@@ -10,10 +10,7 @@ module Tweetogram.CLI.Query.Likes (
 import Relude
 
 import Control.Exception (try)
-import Data.Conduit (
-  runConduitRes,
-  (.|),
- )
+import Data.Conduit (runConduitRes, (.|))
 import Data.Default (def)
 import Data.Map.Strict qualified as Map
 import Options.Applicative (Parser)
