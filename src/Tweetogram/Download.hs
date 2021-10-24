@@ -1,29 +1,30 @@
-module Tweetogram.Download () where
+-- | Download conduits of tweets.
+module Tweetogram.Download (
+  -- * Constructing clients
+  DownloadOptions (..),
+  Client,
+  newClient,
+  maxPageSize,
+
+  -- * Loading tweets through Conduit
+  sourceTimeline,
+  sourceLikes,
+
+  -- * Functions for loading tweets
+  getStatuses,
+  getPages,
+  timelineR,
+  likesR,
+) where
 
 import Conduit (PrimMonad)
-import Control.Concurrent.Async (concurrently)
-import Control.Exception (IOException, try)
 import Control.Lens.Setter ((?~))
-import Data.Aeson (encode)
-import Data.Conduit (ConduitT, runConduitRes, (.|))
-import Data.Conduit.Combinators (
-  concatMapE,
-  conduitVector,
-  mapAccumWhileM,
-  sinkFileCautious,
- )
+import Data.Conduit (ConduitT, (.|))
+import Data.Conduit.Combinators (conduitVector)
+import Data.Conduit.Combinators qualified as Conduit
 import Data.Default (def)
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (
-  TimeZone,
-  getCurrentTimeZone,
-  utcToLocalTime,
- )
 import Data.Vector (Vector)
-import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Relude
-import System.Console.Concurrent (outputConcurrent, withConcurrentOutput)
-import System.FilePath ((</>))
 import Web.Twitter.Conduit (
   APIRequest,
   Credential (..),
@@ -31,8 +32,6 @@ import Web.Twitter.Conduit (
   Manager,
   OAuth (..),
   TWInfo,
-  TwitterError (..),
-  TwitterErrorMessage (..),
   newManager,
   setCredential,
   sourceWithMaxId,
@@ -44,31 +43,30 @@ import Web.Twitter.Conduit.Parameters (TweetMode (..), UserParam (..))
 import Web.Twitter.Conduit.Status (StatusesUserTimeline, userTimeline)
 import Web.Twitter.Types (Status (..))
 
+-- | Options for constructing a 'Client'.
 data DownloadOptions = DownloadOptions
   { twitterConsumerKey :: ByteString
   , twitterConsumerSecret :: ByteString
   , twitterAccessToken :: ByteString
   , twitterAccessTokenSecret :: ByteString
   , twitterUsername :: Text
-  , dataDir :: FilePath
+  , pageSize :: Int
   }
 
-download :: DownloadOptions -> IO ()
-download DownloadOptions{..} = do
-  connMgr <- newManager tlsManagerSettings
-  withConcurrentOutput $ do
-    result <-
-      try $
-        void $
-          concurrently
-            (runPipeline connMgr "Downloading user timeline" (dataDir </> "timeline.ndjson") $ timelineReq twitterUsername)
-            (runPipeline connMgr "Downloading liked tweets" (dataDir </> "likes.ndjson") $ likesReq twitterUsername)
-    handleError result
- where
-  -- Request the maximum page size at a time to optimally consume rate limit.
-  pageSize :: (Num a) => a
-  pageSize = 200
+-- | Clients are a single Twitter API client instance. Individual clients handle
+-- their own HTTP connection multiplexing.
+data Client = Client
+  { connectionManager :: Manager
+  , twInfo :: TWInfo
+  , pageSize :: Int
+  }
 
+-- | Construct a new client instance.
+newClient :: (MonadIO m) => DownloadOptions -> m Client
+newClient DownloadOptions{..} = do
+  connectionManager <- liftIO $ newManager tlsManagerSettings
+  pure Client{connectionManager, twInfo, pageSize}
+ where
   twInfo :: TWInfo
   twInfo =
     setCredential
@@ -76,80 +74,60 @@ download DownloadOptions{..} = do
       (Credential [("oauth_token", twitterAccessToken), ("oauth_token_secret", twitterAccessTokenSecret)])
       def
 
-  runPipeline ::
-    ( HasParam "max_id" Integer supports
-    , HasParam "count" Integer supports
-    , HasParam "tweet_mode" TweetMode supports
-    ) =>
-    Manager ->
-    String ->
-    FilePath ->
-    APIRequest supports [Status] ->
-    IO ()
-  runPipeline connMgr progress filename req =
-    runConduitRes $
-      getPages connMgr req
-        .| concatMapE ((<> "\n") . toStrict . encode)
-        .| void (showProgress progress)
-        .| sinkFileCautious filename
+-- | The maximum Twitter API response page size. Request the maximum page size
+-- at a time to optimally consume rate limit, since the rate limit is applied on
+-- API calls, not on returned tweets.
+maxPageSize :: (Num a) => a
+maxPageSize = 200
 
-  getPages ::
-    ( MonadIO m
-    , PrimMonad m
-    , HasParam "max_id" Integer supports
-    , HasParam "count" Integer supports
-    , HasParam "tweet_mode" TweetMode supports
-    ) =>
-    Manager ->
-    APIRequest supports [Status] ->
-    ConduitT () (Vector Status) m ()
-  getPages connMgr req =
-    sourceWithMaxId twInfo connMgr req'
-      .| conduitVector pageSize
-   where
-    req' =
-      req
-        & #count ?~ pageSize
-        & #tweet_mode ?~ Extended
+-- | Load a user's liked tweets as a conduit.
+sourceLikes :: (MonadIO m, PrimMonad m) => Client -> UserParam -> ConduitT () Status m ()
+sourceLikes client user = getStatuses client $ likesR user
 
-  timelineReq :: Text -> APIRequest StatusesUserTimeline [Status]
-  timelineReq = (#include_rts ?~ True) . userTimeline . ScreenNameParam . toString
+-- | Load a user's posted timeline tweets as a conduit.
+sourceTimeline :: (MonadIO m, PrimMonad m) => Client -> UserParam -> ConduitT () Status m ()
+sourceTimeline client user = getStatuses client $ timelineR user
 
-  likesReq :: Text -> APIRequest FavoritesList [Status]
-  likesReq = favoritesList . Just . ScreenNameParam . toString
+-- | Given an API request repeatable with @max_id@, load statuses as a conduit.
+getStatuses ::
+  ( MonadIO m
+  , PrimMonad m
+  , HasParam "max_id" Integer supports
+  , HasParam "count" Integer supports
+  , HasParam "tweet_mode" TweetMode supports
+  ) =>
+  Client ->
+  APIRequest supports [Status] ->
+  ConduitT () Status m ()
+getStatuses client req =
+  getPages client req
+    .| Conduit.concatMap id
 
-  showProgress :: (MonadIO m) => String -> ConduitT i i m Int
-  showProgress name = (`mapAccumWhileM` 1) $ \x i -> do
-    liftIO $ outputConcurrent $ name <> ": downloaded page " <> show i <> " (" <> show (pageSize * i) <> " tweets total).\n"
-    pure (Right (i + 1, x))
+-- | Given an API request repeatable with @max_id@, load pages of statuses as a
+-- conduit.
+getPages ::
+  ( MonadIO m
+  , PrimMonad m
+  , HasParam "max_id" Integer supports
+  , HasParam "count" Integer supports
+  , HasParam "tweet_mode" TweetMode supports
+  ) =>
+  Client ->
+  APIRequest supports [Status] ->
+  ConduitT () (Vector Status) m ()
+getPages Client{..} req =
+  sourceWithMaxId twInfo connectionManager req'
+    .| conduitVector pageSize
+ where
+  req' =
+    req
+      & #count ?~ toInteger pageSize
+      & #tweet_mode ?~ Extended
 
-  handleError :: Either SomeException a -> IO a
-  handleError result = do
-    tz <- getCurrentTimeZone
-    case result of
-      Right r -> pure r
-      Left err -> die $ fromMaybe ("Unexpected error: " <> displayException err) $ fmtErrs tz err
-   where
-    fmtErrs :: TimeZone -> SomeException -> Maybe String
-    fmtErrs tz err =
-      (fromException err >>= fmtIOErr)
-        <|> (fromException err >>= fmtTwitterErr tz)
+-- | Construct an API request for loading a user's timeline.
+timelineR :: UserParam -> APIRequest StatusesUserTimeline [Status]
+timelineR = (#include_rts ?~ True) . userTimeline
 
-    fmtIOErr :: IOException -> Maybe String
-    fmtIOErr (IOError _ NoSuchThing _ description _ (Just filename)) =
-      Just $ "Could not download tweets to " <> show filename <> ": " <> description
-    fmtIOErr _ = Nothing
-
-    fmtTwitterErr :: TimeZone -> TwitterError -> Maybe String
-    fmtTwitterErr tz (TwitterErrorResponse _ headers [TwitterErrorMessage 88 _]) =
-      Just $
-        fromMaybe "Error: Twitter API rate limit reached" $ do
-          (_, resetTime) <- find ((== "x-rate-limit-reset") . fst) headers
-          timestamp <- readMaybe $ decodeUtf8 resetTime
-          pure $
-            "Error: Twitter API rate limit reached (rate limit resets at "
-              <> show (utcToLocalTime tz $ posixSecondsToUTCTime $ fromInteger timestamp)
-              <> " "
-              <> show tz
-              <> ")"
-    fmtTwitterErr _ _ = Nothing
+-- | Construct an API request for loading a user's liked tweets.
+likesR :: UserParam -> APIRequest FavoritesList [Status]
+likesR = favoritesList . Just
