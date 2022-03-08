@@ -27,7 +27,8 @@ import Text.Layout.Table (asciiS, rowG, tableString, titlesH)
 
 import Tweetogram.CLI.Errors (showExceptions)
 import Tweetogram.CLI.Store (fmtLoadErr)
-import Tweetogram.Query.Likes (Liked (..), LikedUser (..), UserID, likedAuthors)
+import Tweetogram.Query.Likes (LikedUser, LikedUsers, likedAuthors)
+import Tweetogram.Shared.User (UserWith (..))
 import Tweetogram.Store (load)
 
 -- TODO:
@@ -60,8 +61,8 @@ queryLikes QueryLikesOptions{..} = do
 
   render success
  where
-  render :: Liked -> IO ()
-  render Liked{..} =
+  render :: LikedUsers -> IO ()
+  render likedUsers =
     putStrLn $
       tableString
         (fmap (const def) headers)
@@ -73,12 +74,7 @@ queryLikes QueryLikesOptions{..} = do
     ordered =
       sortOn (Down . snd) $
         sortOn (screenName . fst) $
-          first getUser <$> Map.toList tweetsByUser
-
-    getUser :: UserID -> LikedUser
-    getUser userID = case Map.lookup userID users of
-      Just lu -> lu
-      Nothing -> error $ "impossible: inconsistent Tweetogram data: unknown user ID: " <> show userID
+          (\(_, u) -> (u, metadata u)) <$> Map.toList likedUsers
 
     filtered :: [(LikedUser, Int)]
     filtered = filterTopN $ filterMinLikes ordered
@@ -110,7 +106,7 @@ queryLikes QueryLikesOptions{..} = do
     rows = f <$> zip [0 ..] filtered
      where
       f :: (Integer, (LikedUser, Int)) -> [String]
-      f (i, (LikedUser{..}, likedCount)) =
+      f (i, (TwitterUser{..}, likedCount)) =
         [ show (i + 1)
         , show likedCount
         , toString screenName

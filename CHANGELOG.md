@@ -1,5 +1,9 @@
 # Changelog for `tweetogram`
 
+## v0.3.0.0 _TBA_
+
+- `tweetogram query liked-by` is a new subcommand that shows who likes your tweets most.
+
 ## v0.2.0.0 _2021-10-24_
 
 - `tweetogram download` now downloads user timeline tweets.

@@ -82,7 +82,9 @@ library
   exposed-modules:
     Tweetogram.Download
     Tweetogram.Query.Activity
+    Tweetogram.Query.LikedBy
     Tweetogram.Query.Likes
+    Tweetogram.Shared.User
     Tweetogram.Store
 
   build-depends:
